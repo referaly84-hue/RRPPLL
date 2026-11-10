@@ -4181,7 +4181,7 @@ async function pgClub(app) {
     cb.innerHTML = `
     <div class="panel">
       <h3 style="margin:0 0 6px">Главный тренер и тренерский штаб</h3>
-      <p class="muted small" style="margin:0 0 10px">Укажите ФИО и краткую информацию о специалисте (карьера, опыт, подход) — портрет по ней составит администратор с помощью нейросети. Чтобы заменить специалиста, просто назначьте нового на ту же должность.</p>
+      <p class="muted small" style="margin:0 0 10px">Для назначения специалиста достаточно указать его ФИО (возраст и гражданство по желанию). Подробный ИИ-портрет и биографию специалиста составит администратор с помощью нейросети. Чтобы заменить специалиста, просто назначьте нового на ту же должность.</p>
       ${miss.length
         ? `<div style="font-size:13px;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:8px 12px">⚠ Штаб не укомплектован — перед матчем команде будет засчитано техническое поражение 0:3. Не хватает: <b>${miss.map(x => e(x.title)).join(', ')}</b>.</div>`
         : `<div style="font-size:13px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 12px">✓ Обязательные должности заполнены.</div>`}
@@ -4208,16 +4208,15 @@ async function pgClub(app) {
       ${x.member ? `<div style="margin-top:8px"><b style="font-size:15px">${e(x.member.name)}</b>
         <span class="muted small"> ${x.member.age ? '· ' + x.member.age + ' лет' : ''}${x.member.nationality ? ' · ' + e(x.member.nationality) : ''}</span>
         ${x.member.pending ? '<span class="tag" style="background:#fef9c3;color:#854d0e;border-color:#fde047;margin-left:6px">ждёт портрета от администратора</span>' : '<span class="tag" style="background:#dcfce7;color:#166534;border-color:#bbf7d0;margin-left:6px">портрет готов</span>'}
-        ${x.member.brief ? `<div class="small muted" style="margin-top:3px">📝 ${e(x.member.brief)}</div>` : ''}</div>`
+        ${x.member.bio ? `<div class="small muted" style="margin-top:3px">${e(x.member.bio)}</div>` : (x.member.brief ? `<div class="small muted" style="margin-top:3px">📝 ${e(x.member.brief)}</div>` : '')}</div>`
         : `<div class="muted small" style="margin-top:8px">${x.required ? 'Не назначен' : 'Не назначен (можно не заполнять)'}</div>`}
       <details style="margin-top:8px"><summary style="cursor:pointer;font-weight:600">${x.member ? 'Заменить специалиста' : 'Назначить специалиста'}</summary>
         <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
           <div style="flex:2;min-width:200px"><label class="small muted">ФИО</label><input class="sn" placeholder="Напр. Иван Иванов" style="width:100%"></div>
-          <div style="flex:0.6;min-width:80px"><label class="small muted">Возраст</label><input class="sa" type="number" min="25" max="85" style="width:100%"></div>
+          <div style="flex:0.6;min-width:80px"><label class="small muted">Возраст</label><input class="sa" type="number" min="25" max="85" placeholder="лет" style="width:100%"></div>
           <div style="flex:1;min-width:120px"><label class="small muted">Гражданство</label><input class="sc" placeholder="Россия" style="width:100%"></div>
         </div>
-        <label class="small muted" style="margin-top:6px">Краткая информация (до 600 знаков)</label>
-        <textarea class="sb" maxlength="600" placeholder="Где работал, чего добился, в чём силён, какой подход" style="width:100%;min-height:70px"></textarea>
+        <div class="small muted" style="margin-top:6px;color:#64748b">💡 Достаточно указать имя. ИИ-портрет специалиста сделает администратор.</div>
         <div class="row" style="margin-top:8px;gap:8px">
           <button class="btn sm sset">${x.member ? 'Заменить' : 'Назначить'}</button>
           ${x.member && !x.required ? '<button class="btn sm warn srm">Убрать с должности</button>' : ''}
@@ -4236,7 +4235,7 @@ async function pgClub(app) {
       box.querySelector('.sset').onclick = async () => {
         const name = box.querySelector('.sn').value.trim();
         if (name.length < 3) return toast('Укажите ФИО специалиста', true);
-        const r = await act(() => api('/club/staff/set', withT({ role, name, age: box.querySelector('.sa').value, nationality: box.querySelector('.sc').value.trim(), brief: box.querySelector('.sb').value.trim() })), 'Сохранено — портрет сделает администратор');
+        const r = await act(() => api('/club/staff/set', withT({ role, name, age: box.querySelector('.sa').value, nationality: box.querySelector('.sc').value.trim() })), 'Сохранено — портрет сделает администратор');
         if (r) pgClub(app);
       };
       const rd = box.querySelector('.srdel');
@@ -4717,7 +4716,7 @@ async function pgClub(app) {
                   <div>
                     <div style="font-size:12px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.04em">Игрок вашего клуба</div>
                     <div style="font-size:18px;font-weight:800;color:#0f172a;margin-top:2px">
-                      ${e(o.playerName)} <span class="tag" style="font-size:12px">${e(o.pos)}</span> <span class="tag" style="background:#fef3c7;color:#92400e;font-weight:800">Рейтинг ${o.playerRating || 75}</span>
+                      ${e(o.playerName)} <span class="tag" style="font-size:12px">${e(o.pos)}</span>
                     </div>
                     ${o.triggerReason ? `<div class="small muted" style="margin-top:3px;color:#475569">💡 <b>Повод для интереса:</b> ${e(o.triggerReason)}</div>` : ''}
                   </div>
@@ -5462,10 +5461,11 @@ async function pgAdmin(app) {
       <div class="row"><input id="pq" placeholder="Поиск по фамилии" style="flex:1;min-width:200px"><select id="pt" style="max-width:230px"><option value="">Все команды</option>${T.map(t => `<option value="${t.id}">${e(t.name)}</option>`).join('')}</select><button class="btn" id="pnew">+ Игрок</button></div><div id="plist" class="wrap" style="margin-top:10px"></div></div>`;
     const load = async () => {
       const l = await api(`/admin/players?q=${encodeURIComponent($('#pq').value)}&teamId=${$('#pt').value}`);
-      $('#plist').innerHTML = `<table><thead><tr><th class="l">Имя</th><th>Поз.</th><th>Возр.</th><th class="l">Гражданство / Легионер</th><th class="l">Клуб</th><th class="l">Карточка</th><th></th></tr></thead><tbody>${l.map(p => {
+      $('#plist').innerHTML = `<table><thead><tr><th>№</th><th class="l">Имя</th><th>Поз.</th><th>Возр.</th><th class="l">Гражданство / Легионер</th><th class="l">Клуб</th><th class="l">Карточка</th><th></th></tr></thead><tbody>${l.map(p => {
         const leg = p.legionStatus || { label: p.nation || 'Россия', tagClass: 'rus' };
         const legBadge = `<span class="tag" style="${leg.tagClass === 'legion' ? 'background:#fee2e2;color:#991b1b;border-color:#fca5a5' : (leg.tagClass === 'eaeu' ? 'background:#f0fdf4;color:#166534;border-color:#bbf7d0' : 'background:#eff6ff;color:#1e40af;border-color:#bfdbfe')}" title="${e(leg.details || '')}">${e(leg.label)}</span>`;
         return `<tr>
+          <td><b style="color:#1e3a8a">${p.number || p.num || '—'}</b></td>
           <td class="l"><b>${e(p.name)}</b></td>
           <td>${p.pos}</td>
           <td>${age(p.born)}${isBday(p.born) ? ' 🎂' : ''}</td>
@@ -5474,7 +5474,7 @@ async function pgAdmin(app) {
           <td class="l">${p.verified ? '<span class="tag">нейросеть</span>' : '<span class="tag bg">вручную / пусто</span>'}</td>
           <td style="white-space:nowrap"><button class="btn sm" data-pp="${p.id}" title="Сделать портрет (ИИ)">🧑‍🎨 Портрет</button> <button class="btn alt sm" data-pe="${p.id}">Править</button></td>
         </tr>`;
-      }).join('') || '<tr><td colspan="7" class="empty">В базе данных нет игроков. Вы можете добавить игрока кнопкой «+ Игрок»</td></tr>'}</tbody></table>`;
+      }).join('') || '<tr><td colspan="8" class="empty">В базе данных нет игроков. Вы можете добавить игрока кнопкой «+ Игрок»</td></tr>'}</tbody></table>`;
       $('#plist').querySelectorAll('[data-pe]').forEach(b => b.onclick = () => pform(l.find(p => p.id === b.dataset.pe)));
       $('#plist').querySelectorAll('[data-pp]').forEach(b => b.onclick = async () => {
         const old = b.textContent;
@@ -5524,7 +5524,10 @@ async function pgAdmin(app) {
     const pform = p => {
       const f = (k, l, ta) => `<label>${l}</label>${ta ? `<textarea id="f_${k}" style="min-height:60px">${e(p?.[k] || '')}</textarea>` : `<input id="f_${k}" value="${e(p?.[k] || '')}">`}`;
       modal(`<h3>${p ? e(p.name) : 'Новый игрок'}</h3>
-        ${f('name', 'Имя')}
+        <div class="row">
+          <div style="flex:2">${f('name', 'Имя')}</div>
+          <div style="flex:1"><label>Игровой номер (№)</label><input type="number" id="f_number" value="${e(p?.number ?? p?.num ?? '')}" placeholder="№" min="1" max="99"></div>
+        </div>
         <div class="row">
           <div style="flex:1">${f('pos', 'Позиция (ВР, ЦЗ, ЛЗ, ПЗ, ОП, ЦП, АП, ЛВ, ПВ, ЦФ)')}</div>
           <div style="flex:1">${f('born', 'Дата рождения (ГГГГ или ГГГГ-ММ-ДД)')}</div>
@@ -5576,6 +5579,8 @@ async function pgAdmin(app) {
           const r = await act(() => api('/admin/player', {
             id: p?.id,
             name: g('name'),
+            number: m.querySelector('#f_number')?.value || null,
+            num: m.querySelector('#f_number')?.value || null,
             pos: g('pos'),
             born: g('born'),
             nation: g('nation') || 'Россия',
@@ -7269,17 +7274,16 @@ async function pgNational(app) {
   const renderPlayersTable = (list, canEdit) => {
     if (!list.length) return '<div class="empty">Состав на ближайшую паузу ещё не опубликован.</div>';
     return `<div class="scroll-hint"><span>👉 Прокручивайте состав вправо</span></div><div class="wrap"><table>
-      <thead><tr><th>#</th><th class="l">Игрок</th><th>Поз.</th><th class="l">Клуб</th><th>Матчи</th><th>Голы</th><th>Пасы</th><th>Рейтинг</th>${canEdit ? '<th></th>' : ''}</tr></thead>
+      <thead><tr><th>№</th><th class="l">Игрок</th><th>Поз.</th><th class="l">Клуб</th><th>Матчи</th><th>Голы</th><th>Пасы</th>${canEdit ? '<th></th>' : ''}</tr></thead>
       <tbody>
         ${list.map((p, i) => `<tr>
-          <td>${i + 1}</td>
+          <td><b>${p.number || p.num || (i + 1)}</b></td>
           <td class="l"><b>${e(p.name)}</b></td>
           <td><span class="tag">${e(p.pos)}</span></td>
           <td class="l"><div class="t-cell">${p.teamLogo ? `<img class="t-logo" src="${p.teamLogo}" alt=""/>` : ''}<span>${e(p.teamName)}</span></div></td>
           <td>${p.matches || 0}</td>
           <td>${p.goals || 0}</td>
           <td>${p.assists || 0}</td>
-          <td><b>${Number(p.rating || 0).toFixed(2)}</b></td>
           ${canEdit ? `<td><button class="btn alt sm" data-nt-rem="${p.id}">Убрать</button></td>` : ''}
         </tr>`).join('')}
       </tbody>

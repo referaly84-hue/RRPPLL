@@ -4727,6 +4727,8 @@ var HARDCODED = {
   // до 10 ключей из РАЗНЫХ проектов Google, например ['AIza...', 'AIza...']
   geminiModel: "gemini-3.5-flash-lite",
   // пусто = gemini-3.8-flash
+  groqKey: "",
+  openrouterKey: "",
   tgToken: "9287223246:AAGbnn9P7bNs7tpU498FxswCFZ-0QcUu3BQ",
   // токен бота Telegram, например '123456:ABC...'
   tgChat: "https://t.me/matchsmotr"
@@ -5894,7 +5896,7 @@ function load() {
   }
   const T = (n) => db.teams.find((t) => t.name === n);
   {
-    const customDerbies = (db.derbies || []).filter((d) => d.custom && T && db.teams.some((t) => t.id === d.a) && db.teams.some((t) => t.id === d.b));
+    const customDerbies = (db.derbies || []).filter((d) => d.custom && db.teams.some((t) => t.id === d.a) && db.teams.some((t) => t.id === d.b));
     db.derbies = [...buildDerbyList(T), ...customDerbies];
   }
   if (db.settings.noAutoStaff) {
@@ -14119,11 +14121,16 @@ function syncRplFridaySchedules() {
 }
 syncRplFridaySchedules();
 ensureDualTimes();
-db.friendlyRequests ||= [];
-if (expireFriendlies() | (syncPlayerAges() ? 1 : 0)) save();
+{
+  const exp = expireFriendlies();
+  const age2 = syncPlayerAges();
+  if (exp || age2) save();
+}
 setInterval(() => {
   try {
-    if (expireFriendlies() | (syncPlayerAges() ? 1 : 0)) save();
+    const exp = expireFriendlies();
+    const age2 = syncPlayerAges();
+    if (exp || age2) save();
   } catch (err) {
     console.error("daily sync:", err?.message);
   }

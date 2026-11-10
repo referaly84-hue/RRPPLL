@@ -72,6 +72,8 @@ function normalizeTgChat(raw: string): string {
 const HARDCODED = {
   geminiKeys: ['AQ.Ab8RN6JJdEeoqdMnEijSNoE4yHktyDBdXBPKzrX_E3qzbIV5ZQ', 'AQ.Ab8RN6LpYXVQis6VAoxPlBlbcuLx7eeUkTBwE-QjsiCIG3pe1w', 'AQ.Ab8RN6Jtr3n-uzTQ_N6fOueUoIhiTTg2bjAIUfuMG_YMyUFVBA', 'AQ.Ab8RN6IaX9uWN5vSPF2WDqWrAovBie6hKtc8JPrcMndd8a9CMg', 'AQ.Ab8RN6JFculmvVChDuZRnfgtakZ-_7svh9kJjGEn9Jcvth1S6A', 'AQ.Ab8RN6IsBz5qTHl8ynij12vF1eadQ3T_G57QJMlvgEkLBKLcuA'] as string[],      // до 10 ключей из РАЗНЫХ проектов Google, например ['AIza...', 'AIza...']
   geminiModel: 'gemini-3.5-flash-lite',                 // пусто = gemini-3.8-flash
+  groqKey: '' as string,
+  openrouterKey: '' as string,
   tgToken: '9287223246:AAGbnn9P7bNs7tpU498FxswCFZ-0QcUu3BQ',                     // токен бота Telegram, например '123456:ABC...'
   tgChat: 'https://t.me/matchsmotr',                       // канал: '@my_channel' или числовой id '-1001234567890'
 };
@@ -220,18 +222,18 @@ const RPL: [string, string, number, number, string][] = [
 const FNL_TEAMS: [string, string, number, number, string][] = [
   ['Арсенал Тула', 'Тула', 54.19, 37.61, 'Арсенал'],
   ['Велес', 'Москва', 55.7, 37.6, 'Спартаковец'],
-  ['Волга Ульяновск', 'Ульяновск', 54.32, 48.39, 'Труд'],
+  ['Волга', 'Ульяновск', 54.32, 48.39, 'Труд'],
   ['Енисей', 'Красноярск', 56.01, 92.87, 'Центральный'],
   ['КАМАЗ', 'Набережные Челны', 55.74, 52.41, 'КАМАЗ'],
   ['Ленинградец', 'Санкт-Петербург', 59.93, 30.3, 'Рощино Арена'],
   ['Нефтехимик', 'Нижнекамск', 55.64, 51.82, 'Нефтехимик'],
-  ['Пари НН', 'Нижний Новгород', 56.33, 44.0, 'Стадион Нижний Новгород'],
+  ['Нижний Новгород', 'Нижний Новгород', 56.33, 44.0, 'Стадион Нижний Новгород'],
   ['Ротор', 'Волгоград', 48.73, 44.55, 'Волгоград Арена'],
   ['СКА-Хабаровск', 'Хабаровск', 48.48, 135.07, 'Стадион им. Ленина'],
   ['Сочи', 'Сочи', 43.6, 39.73, 'Фишт'],
   ['Спартак Кострома', 'Кострома', 57.77, 40.93, 'Урожай'],
   ['Текстильщик', 'Иваново', 57.0, 40.97, 'Текстильщик'],
-  ['Торпедо Москва', 'Москва', 55.71, 37.65, 'БСА Лужники'],
+  ['Торпедо', 'Москва', 55.71, 37.65, 'БСА Лужники'],
   ['Урал', 'Екатеринбург', 56.83, 60.57, 'Екатеринбург Арена'],
   ['Уфа', 'Уфа', 54.74, 55.97, 'Нефтяник'],
   ['Челябинск', 'Челябинск', 55.16, 61.4, 'Центральный'],
@@ -240,31 +242,31 @@ const FNL_TEAMS: [string, string, number, number, string][] = [
 
 const LOWER: Record<string, string[]> = {
   '2la_gold': [
-    'Динамо Киров', 'Родина-2', 'Динамо Владивосток', 'Алания', 'Сибирь',
-    'Сокол', 'Динамо Брянск', 'Машук-КМВ', 'Волгарь', 'Калуга'
+    'Динамо Киров', 'Родина-2', 'Динамо-Владивосток', 'Алания', 'Сибирь',
+    'Сокол', 'Динамо-Брянск', 'Машук-КМВ', 'Волгарь', 'Калуга'
   ],
   '2la_silver': [
     'Зенит-2', 'Амкар', 'Тюмень', 'Торпедо Миасс', 'Динамо Ставрополь',
-    'Динамо-2 Москва', 'Иртыш'
+    'Динамо-2', 'Иртыш'
   ],
   '2lb_1': [
-    'Севастополь', 'Ростов-2', 'Шахтер Донецк', 'Победа Хасавюрт', 'Рубин Ялта',
-    'Дружба Майкоп', 'Кызылташ', 'Нарт Черкесск', 'Спартак-Нальчик', 'Заря Луганск',
-    'Нефтяник Ахтырский', 'Астрахань', 'Ангушт', 'Чайка-М', 'Динамо-2 Махачкала'
+    'Севастополь', 'Ростов-2', 'Шахтёр Д', 'Победа', 'Рубин Ялта',
+    'Дружба', 'Кызылташ', 'Нарт', 'Спартак-Нальчик', 'Заря',
+    'Нефтяник И', 'Астрахань', 'Ангушт', 'Чайка-М', 'Динамо-2 Мх'
   ],
   '2lb_2': [
-    'Муром', 'Динамо СПб', 'Чертаново', 'Луки-Энергия', 'Балтика-БФУ',
-    'Космос Долгопрудный', 'Тверь', 'Торпедо Владимир', 'Череповец', 'Спартак-2',
-    'Динамо Вологда', 'Звезда', 'Енисей-2', 'Искра Смоленск', 'Иркутск'
+    'Муром', 'Динамо-СПб', 'Чертаново-мол.', 'Луки-Энергия', 'Балтика-2',
+    'Космос', 'Тверь', 'Торпедо-Владимир', 'Череповец', 'Спартак-2',
+    'Динамо Вг', 'Звезда СПб', 'Енисей-2', 'Искра', 'Иркутск'
   ],
   '2lb_3': [
-    'Спартак Тамбов', 'Волна', 'Салют Белгород', 'Рязань', 'Металлург Липецк',
-    'Сатурн Раменское', 'Родина-М', 'Шумбрат', 'Орел', 'Авангард Курск',
-    'Строгино', 'СКА-Хабаровск-2', 'Зенит Пенза', 'Ротор-2', 'Арсенал-2', 'Квант Обнинск'
+    'Спартак Тм', 'Волна', 'Салют Белгород', 'Рязань', 'Металлург Лп',
+    'Леон Сатурн', 'Родина-3', 'Шумбрат', 'Орёл', 'Авангард К',
+    'Строгино', 'СКА-Хабаровск-2', 'Зенит Пз', 'Ротор-2', 'Арсенал-2', 'Квант'
   ],
   '2lb_4': [
-    'Химик', 'КДВ Томск', 'Победа НН', 'Акрон-2', 'Крылья Советов-2',
-    'Динамо Барнаул', 'Оренбург-2', 'Ижевск', 'Урал-2', 'Рубин-2', 'Носта', 'Челябинск-2'
+    'Химик Дз', 'КДВ', 'Победа НН', 'Акрон-2', 'Крылья Советов-2',
+    'Динамо-Барнаул', 'Оренбург-2', 'Ижевск', 'Урал-2', 'Рубин-2', 'Носта', 'Челябинск-2'
   ],
   'media': [
     '2Drots', 'Амкал', 'Броуки (Brokeboys)', 'ФК 10', 'Lit Energy', 'СиндЕкат',
@@ -275,11 +277,9 @@ const LOWER: Record<string, string[]> = {
   ]
 };
 
-/* Клубы, которых в лигах больше нет (вычищаются при запуске, если за ними нет игроков, матчей и штаба).
-   «Балтика-2» и «Родина-3» — дубли «Балтика-БФУ» и «Родина-М» (те же клубы во Второй лиге Б). */
+/* Клубы, которых в лигах больше нет (вычищаются при запуске, если за ними нет игроков, матчей и штаба). */
 const DROPPED_TEAMS = [
-  'Rocket Team', 'Банка', 'Чисто Питер', 'Эгриси',
-  'Спартак Владикавказ', 'ПСК Динская', 'Легион', 'Балтика-2', 'Родина-3'
+  'Rocket Team', 'Банка', 'Чисто Питер', 'Эгриси'
 ];
 
 const COMPS = [
@@ -938,7 +938,7 @@ function load() {
   // Обновляем дерби
   const T = (n: string) => db.teams.find((t: any) => t.name === n);
   {
-    const customDerbies = (db.derbies || []).filter((d: any) => d.custom && T && db.teams.some((t: any) => t.id === d.a) && db.teams.some((t: any) => t.id === d.b));
+    const customDerbies = (db.derbies || []).filter((d: any) => d.custom && db.teams.some((t: any) => t.id === d.a) && db.teams.some((t: any) => t.id === d.b));
     db.derbies = [...buildDerbyList(T), ...customDerbies];
   }
 
@@ -2838,8 +2838,8 @@ const queue: { id: string; manual: boolean }[] = [];
 let running = 0;
 /* ───────── технические поражения ───────── */
 /** Обязательный тренерский штаб (роли из STAFF_ROLES). Без него команда на матч не допускается. */
-const STAFF_ROLE_LIST = ['head', 'assistant', 'gk', 'fitness', 'set_pieces', 'attack', 'doctor'];
-const REQUIRED_STAFF_ROLES = ['head', 'assistant', 'gk', 'fitness', 'set_pieces', 'doctor'];
+const STAFF_ROLE_LIST = ['head', 'assistant', 'gk', 'fitness', 'set_pieces', 'attack', 'analyst', 'doctor'];
+const REQUIRED_STAFF_ROLES = ['head', 'assistant', 'gk', 'fitness', 'doctor'];
 const KNOCKOUT_COMPS = ['cup', 'supercup', 'playoff'];
 function hasStaffRole(tid: string, role: string) {
   if (getStaffForTeam(tid).some((x: any) => x.role === role)) return true;
@@ -4641,7 +4641,8 @@ const pubPlayer = (p: any) => ({
   name: p.name,
   pos: p.pos,
   born: p.born,
-  num: p.num ?? null,
+  num: p.num ?? p.number ?? null,
+  number: p.number ?? p.num ?? null,
   age: ageOfPlayer(p),
   birthdayToday: isBirthdayToday(p),
   nation: p.nation || 'Россия',
@@ -6439,6 +6440,11 @@ app.post('/api/admin/player', admin, (req, res) => {
   }
   for (const k of ['name', 'pos', 'born', 'nation', 'realClub', 'style', 'stats2y', 'form', 'character', 'news', 'otherNationalTeam']) {
     if (typeof b[k] === 'string') p[k] = b[k];
+  }
+  if (b.num !== undefined || b.number !== undefined) {
+    const n = b.number !== undefined ? b.number : b.num;
+    p.number = n !== '' && n !== null ? Number(n) : null;
+    p.num = p.number;
   }
   if (b.playedForOtherNationalTeam !== undefined) {
     p.playedForOtherNationalTeam = !!b.playedForOtherNationalTeam;
@@ -9194,11 +9200,18 @@ function syncRplFridaySchedules() {
 
 syncRplFridaySchedules();
 ensureDualTimes();
-db.friendlyRequests ||= [];
-if (expireFriendlies() | (syncPlayerAges() ? 1 : 0)) save();
+{
+  const exp = expireFriendlies();
+  const age = syncPlayerAges();
+  if (exp || age) save();
+}
 /* раз в час: у кого наступил день рождения — возраст растёт; просроченные заявки на товарищеские закрываются */
 setInterval(() => {
-  try { if (expireFriendlies() | (syncPlayerAges() ? 1 : 0)) save(); } catch (err: any) { console.error('daily sync:', err?.message); }
+  try {
+    const exp = expireFriendlies();
+    const age = syncPlayerAges();
+    if (exp || age) save();
+  } catch (err: any) { console.error('daily sync:', err?.message); }
 }, 3600_000);
 invalidateAgg();
 resumeLive();
