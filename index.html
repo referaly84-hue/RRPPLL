@@ -2641,7 +2641,8 @@ async function pgFixtures(app, comp = 'rpl', round) {
 }
 
 /* ───── матч ───── */
-const EVI = { goal: '⚽', own_goal: '⚽', yellow: '🟨', red: '🟥', injury: '🚑', penalty: '🎯', var: '📺', ref_error: '🧑‍⚖️', halftime: '⏸', fulltime: '🏁', highlight: '🔥', incident: '❗', save: '🧤', post: '🥅', sub: '🔁', corner: '🚩', foul: '✋', shot: '💥', miss: '↗', tackle: '🛡', kickoff: '▶', offside: '🚫', freekick: '🎯', possession: '·', pass: '·', dribble: '·', duel: '·' };
+const EVI = { goal: '⚽', own_goal: '⚽', yellow: '🟨', red: '🟥', injury: '🚑', penalty: '🎯', var: '📺', ref_error: '🧑‍⚖️', halftime: '⏸', fulltime: '🏁', highlight: '🔥', incident: '❗', save: '🧤', post: '🥅', sub: '🔁', corner: '🚩', foul: '✋', shot: '💥', miss: '↗', tackle: '🛡', kickoff: '▶', offside: '🚫', freekick: '🎯', possession: '·', pass: '·', dribble: '·', duel: '·', commentator_intro: '🎙', tactical_note: '📋', stat_display: '📊', crowd: '📣', lineup: '📃', walkout: '🚶', anthem: '🎶', coin_toss: '🪙', photo: '📸', warmup: '🏃', kickoff_buildup: '⏳', kit_issue: '👕', verbal_warning: '☝️', cooling_break: '💧' };
+const fmtEvT = x => { const t = x.min * 60 + (x.sec || 0), a = Math.abs(t); return (t < 0 ? '−' : '') + Math.floor(a / 60) + ':' + String(a % 60).padStart(2, '0'); };
 let M = null, evs = [], mtab = 'live';
 
 async function pgMatch(app, id) {
@@ -2795,7 +2796,7 @@ function paintMatch() {
       const cls = x.type === 'goal' || x.type === 'own_goal' ? 'goal' : x.type === 'red' ? 'red' : ['yellow', 'injury', 'penalty', 'var', 'ref_error', 'highlight', 'incident', 'halftime', 'fulltime'].includes(x.type) ? 'key' : '';
       const tLogo = x.team === 'home' ? (f.homeLogo || teamLogo(f.home)) : (x.team === 'away' ? (f.awayLogo || teamLogo(f.away)) : null);
       return `<div class="ev ${cls}">
-        <div class="m">${x.min}:${String(x.sec).padStart(2, '0')}</div>
+        <div class="m">${x.min < 0 ? 'до матча' : fmtEvT(x)}</div>
         <div>${tLogo ? `<img class="t-logo" src="${tLogo}" alt=""/>` : (EVI[x.type] || '·')}</div>
         <div>${e(x.text)}${cls && x.players?.length ? `<div class="pl">${e(x.players.join(', '))}</div>` : ''}${x.type === 'goal' || x.type === 'own_goal' ? `<div class="pl"><b>${x.score[0]}:${x.score[1]}</b></div>` : ''}</div>
       </div>`;
@@ -3998,6 +3999,7 @@ async function pgClub(app) {
     <button data-t="matches" class="${CT === 'matches' ? 'on' : ''}">Матчи и тактика</button>
     <button data-t="squad" class="${CT === 'squad' ? 'on' : ''}">Заявка (${c.squad.length}/${c.squadMax})</button>
     <button data-t="staff" class="${CT === 'staff' ? 'on' : ''}" style="${(c.staffSlots || []).some(x => x.required && !x.member) ? 'background:#fee2e2;color:#991b1b;font-weight:700' : ''}">🧑‍🏫 Штаб ${(c.staffSlots || []).filter(x => x.required && !x.member).length ? `(не хватает: ${(c.staffSlots || []).filter(x => x.required && !x.member).length})` : ''}</button>
+    <button data-t="staffmarket" class="${CT === 'staffmarket' ? 'on' : ''}" style="${(c.staffOffers?.incoming?.length) ? 'background:#dcfce7;color:#166534;font-weight:700' : ''}">🔄 Рынок штаба ${(c.staffOffers?.incoming?.length || c.staffOffers?.outgoing?.length) ? `(${(c.staffOffers.incoming?.length || 0) + (c.staffOffers.outgoing?.length || 0)})` : ''}</button>
     <button data-t="foreign" class="${CT === 'foreign' ? 'on' : ''}" style="${c.foreignOffers?.length ? 'background:#dcfce7;color:#166534;font-weight:700' : ''}">🌍 Зарубежные предложения ${c.foreignOffers?.length ? `<span style="background:#dc2626;color:#fff;border-radius:10px;padding:2px 7px;font-size:11px;margin-left:4px">${c.foreignOffers.length}</span>` : ''}</button>
     <button data-t="friendly" class="${CT === 'friendly' ? 'on' : ''}">Товарищеские ${(c.friendly?.incoming?.length || 0) ? `(${c.friendly.incoming.length})` : ''}</button>
     <button data-t="transfers" class="${CT === 'transfers' ? 'on' : ''}">Трансферы РПЛ ${((c.incomingTransfers?.length || 0) + (c.outgoingTransfers?.length || 0)) ? `(${c.incomingTransfers.length + c.outgoingTransfers.length})` : ''}</button>
@@ -4083,7 +4085,7 @@ async function pgClub(app) {
         <td>${age(p.born)}${isBday(p.born) ? ' 🎂' : ''}</td>
         <td class="l">${legTag}<div style="margin-top:4px"><input class="nat-edit" list="nat_list" data-pid="${p.id}" value="${e(p.nation || 'Россия')}" title="Страна (гражданство) — можно изменить" style="width:150px;padding:3px 6px;font-size:12.5px;min-height:0"></div></td>
         <td class="l muted small" style="white-space:normal;max-width:320px">${e(p.style)}</td>
-        <td class="l">${p.available ? '<span class="tag">готов</span>' : `<span class="tag" style="background:#fde8e6">${p.banLeft > 0 ? 'дисквалификация' : 'травма'}</span>`}</td>
+        <td class="l">${p.available ? '<span class="tag">готов</span>' : `<span class="tag" style="background:#fde8e6">${e(p.unavailText || (p.banLeft > 0 ? 'дисквалификация' : 'травма'))}</span>`}${p.available && p.yellowCycle ? `<div class="muted small">ЖК: ${p.yellowCycle}/4</div>` : ''}</td>
         <td><button class="btn alt sm" data-rm="${p.id}">убрать</button></td>
       </tr>`;
     }).join('') || '<tr><td colspan="7" class="empty">Заявка пуста.</td></tr>'}</tbody></table></div>
@@ -4184,10 +4186,23 @@ async function pgClub(app) {
         ? `<div style="font-size:13px;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:8px 12px">⚠ Штаб не укомплектован — перед матчем команде будет засчитано техническое поражение 0:3. Не хватает: <b>${miss.map(x => e(x.title)).join(', ')}</b>.</div>`
         : `<div style="font-size:13px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 12px">✓ Обязательные должности заполнены.</div>`}
     </div>
+    <div class="panel">
+      <details>
+        <summary style="cursor:pointer;font-weight:700">➕ Создать свою должность в штабе</summary>
+        <p class="muted small" style="margin:6px 0">Например: скаут, психолог, аналитик, тренер по видеоразбору. Должность по желанию — на допуск к матчам она не влияет, но попадает в карточку штаба и в трансляции. Затем назначьте на неё специалиста.</p>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <div style="flex:0.4;min-width:60px"><label class="small muted">Значок</label><input id="nr_icon" maxlength="4" placeholder="🔍" style="width:100%"></div>
+          <div style="flex:2;min-width:200px"><label class="small muted">Название должности</label><input id="nr_title" maxlength="50" placeholder="Напр. Главный скаут" style="width:100%"></div>
+        </div>
+        <label class="small muted" style="margin-top:6px">Чем занимается (необязательно)</label>
+        <input id="nr_desc" maxlength="200" placeholder="Поиск игроков, анализ соперников…" style="width:100%">
+        <div class="row" style="margin-top:8px"><button class="btn sm" id="nr_go">Создать должность</button></div>
+      </details>
+    </div>
     ${slots.map(x => `
     <div class="panel" data-slot="${x.role}">
       <div class="row sp" style="flex-wrap:wrap;gap:8px">
-        <div class="row" style="gap:8px"><span class="staff-role-badge ${x.role}">${x.icon} ${e(x.title)}</span>${x.required ? '<span class="tag" style="background:#fee2e2;color:#991b1b;border-color:#fca5a5">обязательно</span>' : '<span class="tag">по желанию</span>'}</div>
+        <div class="row" style="gap:8px"><span class="staff-role-badge ${x.role}">${x.icon} ${e(x.title)}</span>${x.required ? '<span class="tag" style="background:#fee2e2;color:#991b1b;border-color:#fca5a5">обязательно</span>' : `<span class="tag">${x.custom ? 'своя должность' : 'по желанию'}</span>`}</div>
         <div class="small muted">${e(x.desc)}</div>
       </div>
       ${x.member ? `<div style="margin-top:8px"><b style="font-size:15px">${e(x.member.name)}</b>
@@ -4206,15 +4221,28 @@ async function pgClub(app) {
         <div class="row" style="margin-top:8px;gap:8px">
           <button class="btn sm sset">${x.member ? 'Заменить' : 'Назначить'}</button>
           ${x.member && !x.required ? '<button class="btn sm warn srm">Убрать с должности</button>' : ''}
+          ${x.custom ? '<button class="btn sm warn srdel">Удалить должность</button>' : ''}
         </div>
       </details>
     </div>`).join('')}`;
+    $('#nr_go').onclick = async () => {
+      const title = $('#nr_title').value.trim();
+      if (title.length < 3) return toast('Название должности — от 3 знаков', true);
+      const r = await act(() => api('/club/staff/role/create', withT({ title, desc: $('#nr_desc').value.trim(), icon: $('#nr_icon').value.trim() })), 'Должность создана — назначьте специалиста');
+      if (r) pgClub(app);
+    };
     cb.querySelectorAll('[data-slot]').forEach(box => {
       const role = box.dataset.slot;
       box.querySelector('.sset').onclick = async () => {
         const name = box.querySelector('.sn').value.trim();
         if (name.length < 3) return toast('Укажите ФИО специалиста', true);
         const r = await act(() => api('/club/staff/set', withT({ role, name, age: box.querySelector('.sa').value, nationality: box.querySelector('.sc').value.trim(), brief: box.querySelector('.sb').value.trim() })), 'Сохранено — портрет сделает администратор');
+        if (r) pgClub(app);
+      };
+      const rd = box.querySelector('.srdel');
+      if (rd) rd.onclick = async () => {
+        if (!confirm('Удалить должность вместе со специалистом, который на ней работает?')) return;
+        const r = await act(() => api('/club/staff/role/delete', withT({ role })), 'Должность удалена');
         if (r) pgClub(app);
       };
       const rm = box.querySelector('.srm');
@@ -4224,6 +4252,110 @@ async function pgClub(app) {
         if (r) pgClub(app);
       };
     });
+    return;
+  }
+
+  if (CT === 'staffmarket') {
+    const so = c.staffOffers || { incoming: [], outgoing: [], history: [] };
+    const ap = v => v === 'approved' ? '✅' : v === 'rejected' ? '❌' : v === 'not_required' ? '—' : '⏳';
+    const stH = { approved: ['✅ Сделка завершена', '#dcfce7;color:#166534'], rejected: ['❌ Отклонена', '#fee2e2;color:#991b1b'], cancelled: ['↩ Отозвана', '#e2e8f0;color:#334155'] };
+    const logo = (u, n) => u ? `<img class="t-logo sm" src="${u}" alt="" style="width:18px;height:18px;vertical-align:middle"> ` : '';
+    const appr = o => `<div class="small muted" style="margin-top:4px">Клуб-продавец: ${ap(o.clubApproval)} · Администратор лиги: ${ap(o.adminApproval)}</div>`;
+    const inHtml = so.incoming.map(o => `
+      <div class="panel" style="margin-top:8px" data-in="${e(o.id)}">
+        <div>${logo(o.toLogo)}<b>${e(o.toName)}</b> хочет купить вашего специалиста <b>${e(o.staffName)}</b> <span class="muted small">(${e(o.roleTitle)})</span></div>
+        <div class="small" style="margin-top:3px">Компенсация вашему клубу: <b>${e(o.fee)}</b>${o.note ? ' · ' + e(o.note) : ''}</div>
+        ${o.leavesVacancy ? `<div style="font-size:13px;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:6px 10px;margin-top:6px">⚠ После ухода должность «${e(o.roleTitle)}» останется пустой — до матча нужно назначить замену, иначе команде засчитают техническое поражение.</div>` : ''}
+        ${appr(o)}
+        <div class="row" style="gap:8px;margin-top:8px"><button class="btn sm so-ok">Согласиться</button><button class="btn sm warn so-no">Отклонить</button></div>
+      </div>`).join('');
+    const outHtml = so.outgoing.map(o => `
+      <div class="panel" style="margin-top:8px" data-out="${e(o.id)}">
+        <div>Заявка на <b>${e(o.staffName)}</b> <span class="muted small">(${e(o.roleTitle)})</span> из ${logo(o.fromLogo)}<b>${e(o.fromName)}</b></div>
+        <div class="small" style="margin-top:3px">Компенсация: <b>${e(o.fee)}</b>${o.replaces?.length ? ` · <span style="color:#991b1b">освободит должность: ${e(o.replaces.join(', '))}</span>` : ''}</div>
+        ${appr(o)}
+        <div class="row" style="margin-top:8px"><button class="btn sm warn so-cancel">Отозвать заявку</button></div>
+      </div>`).join('');
+    const hiHtml = so.history.map(o => { const st = stH[o.status] || [o.status, '#e2e8f0;color:#334155'];
+      return `<div class="small" style="padding:6px 0;border-top:1px dashed var(--line)"><span class="tag" style="background:${st[1]}">${st[0]}</span> <b>${e(o.staffName)}</b> · ${e(o.fromName)} → ${e(o.toName)} · ${e(o.fee)}${o.rejectReason ? ` <span class="muted">— ${e(o.rejectReason)}</span>` : ''}</div>`; }).join('');
+    const stdRoles = (c.staffSlots || []).filter(x => !x.custom);
+    cb.innerHTML = `
+    <div class="panel">
+      <h3 style="margin:0 0 6px">🔄 Рынок тренеров и штаба</h3>
+      <p class="muted small" style="margin:0">Подайте заявку на покупку главного тренера или специалиста штаба другого клуба. Заявку рассмотрит клуб-продавец (между клубами РПЛ нужно его согласие) и администратор лиги. Если на нужной должности у вас уже кто-то работает — он покинет клуб. Бюджет клуба: <b>${e(c.formattedBudget)}</b>.</p>
+    </div>
+    ${so.incoming.length ? `<h3 style="margin:14px 0 0">Вам поступили заявки (${so.incoming.length})</h3>${inHtml}` : ''}
+    ${so.outgoing.length ? `<h3 style="margin:14px 0 0">Ваши заявки (${so.outgoing.length})</h3>${outHtml}` : ''}
+    <div class="panel" style="margin-top:14px">
+      <h3 style="margin:0 0 8px">Каталог специалистов</h3>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <select id="mk_role"><option value="">Все должности</option>${stdRoles.map(x => `<option value="${e(x.role)}">${e(x.title)}</option>`).join('')}</select>
+        <input id="mk_q" placeholder="ФИО или клуб" style="flex:1;min-width:160px">
+        <button class="btn sm" id="mk_go">Найти</button>
+      </div>
+      <div id="mk_list" style="margin-top:8px"></div>
+    </div>
+    ${so.history.length ? `<div class="panel" style="margin-top:14px"><h3 style="margin:0 0 6px">История заявок</h3>${hiHtml}</div>` : ''}`;
+
+    const respond = (id, action, okMsg) => async () => {
+      const r = await act(() => api('/club/staff/offer/respond', withT({ offerId: id, action })), x => x.message || okMsg);
+      if (r) pgClub(app);
+    };
+    cb.querySelectorAll('[data-in]').forEach(box => {
+      const id = box.dataset.in;
+      box.querySelector('.so-ok').onclick = () => { if (confirm('Продать специалиста? После решения администратора он перейдёт в другой клуб.')) respond(id, 'approve')(); };
+      box.querySelector('.so-no').onclick = respond(id, 'reject');
+    });
+    cb.querySelectorAll('[data-out]').forEach(box => { box.querySelector('.so-cancel').onclick = respond(box.dataset.out, 'cancel'); });
+
+    const holderOf = r => (c.staffSlots || []).find(x => x.role === r)?.member?.name || '';
+    const openOffer = (m, myRoles) => {
+      const opts = [...(m.custom ? [['', `Создать у нас такую же должность («${m.roleTitle}»)`]] : []), ...myRoles.map(x => [x.role, x.title])];
+      const def = m.custom ? '' : m.role;
+      modal(`<div style="max-width:470px;padding:4px">
+        <h3 style="margin:0 0 4px">Заявка на специалиста</h3>
+        <div style="margin-bottom:8px"><b>${e(m.name)}</b> <span class="muted small">· ${e(m.roleTitle)} · ${e(m.teamName)}</span></div>
+        <label class="small muted">Компенсация клубу-продавцу</label>
+        <input id="of_fee" value="€1.0M" style="width:100%" placeholder="Напр. €1.5M">
+        <label class="small muted" style="margin-top:6px">Должность в вашем клубе</label>
+        <select id="of_role" style="width:100%">${opts.map(([v, t]) => `<option value="${e(v)}" ${v === def ? 'selected' : ''}>${e(t)}</option>`).join('')}</select>
+        <div id="of_warn" class="small" style="margin-top:6px"></div>
+        <label class="small muted" style="margin-top:6px">Комментарий (необязательно)</label>
+        <input id="of_note" maxlength="300" style="width:100%">
+        <div class="row" style="gap:8px;margin-top:10px"><button class="btn" id="of_go">Отправить заявку</button><button class="btn sm warn" id="of_x">Отмена</button></div>
+      </div>`, mm => {
+        const warn = () => { const h = holderOf(mm.querySelector('#of_role').value); mm.querySelector('#of_warn').innerHTML = h ? `<span style="color:#991b1b">⚠ Сейчас на этой должности работает ${e(h)} — при переходе он покинет клуб.</span>` : ''; };
+        mm.querySelector('#of_role').onchange = warn; warn();
+        mm.querySelector('#of_x').onclick = () => mm.remove();
+        mm.querySelector('#of_go').onclick = async () => {
+          const r = await act(() => api('/club/staff/offer', withT({ staffId: m.id, fee: mm.querySelector('#of_fee').value.trim(), targetRole: mm.querySelector('#of_role').value, note: mm.querySelector('#of_note').value.trim() })), x => x.message || 'Заявка отправлена');
+          if (r) { mm.remove(); pgClub(app); }
+        };
+      });
+    };
+    const loadMarket = async () => {
+      const box = $('#mk_list');
+      box.innerHTML = '<div class="muted small">Загрузка…</div>';
+      let r;
+      try { r = await api('/club/staff/market' + (q ? q + '&' : '?') + 'role=' + encodeURIComponent($('#mk_role').value) + '&q=' + encodeURIComponent($('#mk_q').value.trim())); }
+      catch (x) { box.innerHTML = `<div class="warn">${e(x.message)}</div>`; return; }
+      if (!r.members.length) { box.innerHTML = '<div class="muted small">Никого не найдено</div>'; return; }
+      box.innerHTML = (r.total > r.members.length ? `<div class="muted small" style="margin-bottom:4px">Показано ${r.members.length} из ${r.total} — уточните поиск</div>` : '') +
+        r.members.map((m, i) => `
+        <div class="row sp" style="gap:8px;padding:7px 0;border-top:1px dashed var(--line);flex-wrap:wrap">
+          <div style="min-width:220px;flex:1">
+            <b>${e(m.name)}</b> <span class="muted small">${m.age ? '· ' + m.age + ' лет' : ''}${m.nationality ? ' · ' + e(m.nationality) : ''}</span>
+            <div class="small">${e(m.roleTitle)} · ${logo(m.teamLogo)}${e(m.teamName)}${m.reputation ? ` · репутация ${e(m.reputation)}` : ''}</div>
+            ${m.specialty ? `<div class="small muted">${e(m.specialty)}</div>` : ''}
+          </div>
+          ${m.offered ? '<span class="tag">заявка подана</span>' : `<button class="btn sm mk-buy" data-i="${i}">Подать заявку</button>`}
+        </div>`).join('');
+      box.querySelectorAll('.mk-buy').forEach(b => b.onclick = () => openOffer(r.members[+b.dataset.i], r.myRoles));
+    };
+    $('#mk_go').onclick = loadMarket;
+    $('#mk_role').onchange = loadMarket;
+    $('#mk_q').onkeydown = ev => { if (ev.key === 'Enter') loadMarket(); };
+    loadMarket();
     return;
   }
 
@@ -4822,6 +4954,7 @@ async function pgAdmin(app) {
     ['friendly', `Товарищеские${ov.pendingFriendlyCount ? ' (' + ov.pendingFriendlyCount + ')' : ''}`],
     ['transfers', `Трансферы${ov.transfers.length ? ' (' + ov.transfers.length + ')' : ''}`],
     ['budget', 'Бюджет'],
+    ['aiq', '🤖 Очередь ИИ'],
     ['settings', 'Настройки']
   ];
   app.innerHTML = `<h1>Админка</h1><div class="tabs">${tabs.map(([k, t]) => `<button data-a="${k}" class="${k === AT ? 'on' : ''}">${t}</button>`).join('')}</div><div id="ab"></div>`;
@@ -5170,7 +5303,7 @@ async function pgAdmin(app) {
     ab.innerHTML = `<div class="panel">
       <div class="row sp">
         <h3>Команды и логотипы (${T.length})</h3>
-        <button class="btn" id="addt">+ Новая команда</button>
+        <span class="row" style="gap:8px"><button class="btn" id="impsq">📥 Импорт составов из файла</button><button class="btn" id="addt">+ Новая команда</button></span>
       </div>
       <p class="muted small">Все команды снабжены аутентичными векторными эмблемами. Вы можете менять название, стадион, код и загружать собственный логотип.</p>
       <div class="wrap"><table><thead><tr><th class="l">Эмблема</th><th class="l">Команда</th><th class="l">Лига</th><th class="l">Код</th><th>Игроков</th><th>Заявка</th><th></th></tr></thead><tbody>${T.map(t => `<tr>
@@ -5239,6 +5372,50 @@ async function pgAdmin(app) {
     };
 
     $('#addt').onclick = () => teamForm(null);
+    $('#impsq').onclick = () => {
+      modal(`<h3>Импорт составов из файла</h3>
+        <p class="muted small">Файл .txt: «Клуб:» → строки «номер, ФИО, позиция, возраст (дата рождения), гражданство», затем «Тренерский штаб:». Сначала нажмите «Проверить» — база при этом не меняется. Игроки с тем же ФИО и датой рождения обновляются, а не дублируются, поэтому файл можно загружать повторно, когда составы меняются.</p>
+        <input type="file" id="sqf" accept=".txt,text/plain" multiple/>
+        <textarea id="sqt" rows="5" style="width:100%;margin-top:8px" placeholder="…или вставьте текст с составами сюда"></textarea>
+        <label class="small" style="display:block;margin:6px 0"><input type="checkbox" id="sqr"/> Убрать из составов клубов игроков, которых нет в файле (останутся в базе «без клуба»)</label>
+        <label class="small" style="display:block;margin:6px 0"><input type="checkbox" id="sqs" checked/> Загрузить тренерский штаб</label>
+        <div class="row" style="gap:8px;margin:8px 0"><button class="btn" id="sqc">Проверить</button><button class="btn" id="sqg" disabled>Загрузить в базу</button><button class="btn" id="sqx">Закрыть</button></div>
+        <div id="sqo" style="max-height:50vh;overflow:auto"></div>`, m => {
+        const out = m.querySelector('#sqo'), go = m.querySelector('#sqg'), txt = m.querySelector('#sqt');
+        const stale = () => { go.disabled = true; };
+        m.querySelector('#sqx').onclick = () => m.remove();
+        m.querySelector('#sqf').onchange = async ev => {
+          const parts = [];
+          for (const f of ev.target.files) parts.push(await f.text());
+          txt.value = parts.join('\n\n');
+          stale();
+        };
+        txt.oninput = stale; m.querySelector('#sqr').onchange = stale; m.querySelector('#sqs').onchange = stale;
+        const collectMap = () => {
+          const map = {};
+          out.querySelectorAll('select[data-club]').forEach(sel => { if (sel.value) map[sel.dataset.club] = sel.value; });
+          return map;
+        };
+        const run = async apply => {
+          if (!txt.value.trim()) return toast('Выберите файл или вставьте текст', true);
+          const btn = apply ? go : m.querySelector('#sqc');
+          btn.disabled = true;
+          const r = await act(() => api('/admin/squads/import', { text: txt.value, apply, replace: m.querySelector('#sqr').checked, staff: m.querySelector('#sqs').checked, map: collectMap() }),
+            r => apply ? `Загружено: новых игроков ${r.totals.added}, обновлено ${r.totals.updated}, переведено ${r.totals.moved}, штаб ${r.totals.staffSet}` : false);
+          btn.disabled = false;
+          if (!r) return;
+          const t = r.totals, bad = r.clubs.filter(c => !c.teamId);
+          const opts = c => `<option value="">— пропустить —</option>` + T.map(x => `<option value="${x.id}">${e(x.name)}</option>`).join('');
+          out.innerHTML = `<p><b>${apply ? 'Готово' : 'Проверка'}:</b> клубов в файле ${t.clubs}, найдено команд ${t.matched}${t.unmatched ? `, <span style="color:var(--red,#c33)">не найдено ${t.unmatched}</span>` : ''}; игроков ${t.players}: новых <b>${t.added}</b>, обновлено ${t.updated}, переведено из других клубов ${t.moved}${t.removed ? `, убрано из составов ${t.removed}` : ''}; штаб: ${t.staffSet}.</p>`
+            + (bad.length ? `<div class="panel"><b>Не удалось сопоставить — выберите команду и нажмите «Проверить» ещё раз:</b><table><tbody>${bad.map(c => `<tr><td class="l">${e(c.club)} (${c.players})</td><td><select data-club="${e(c.club)}">${opts(c)}</select></td></tr>`).join('')}</tbody></table></div>` : '')
+            + `<div class="wrap"><table><thead><tr><th class="l">Клуб в файле</th><th class="l">Команда в базе</th><th>Игроков</th><th>Новых</th><th>Обн.</th><th>Переведено</th><th>Убрано</th><th>Штаб</th></tr></thead><tbody>${r.clubs.filter(c => c.teamId).map(c => `<tr><td class="l">${e(c.club)}</td><td class="l">${e(c.team)}${c.how === 'alias' ? ' <span class="muted small" title="сопоставлено по таблице соответствий — проверьте">⚠</span>' : ''}</td><td>${c.players}</td><td>${c.added}</td><td>${c.updated}</td><td>${c.moved}</td><td>${c.removed}</td><td>${c.staffSet}${c.staffSkipped.length ? ` <span class="muted small" title="${e(c.staffSkipped.join('; '))}">(+${c.staffSkipped.length} без роли)</span>` : ''}</td></tr>`).join('')}</tbody></table></div>`
+            + (r.warnings.length ? `<details style="margin-top:8px"><summary class="small">Замечания (${r.warnings.length})</summary><ul class="small">${r.warnings.slice(0, 80).map(w => `<li>${e(w)}</li>`).join('')}${r.warnings.length > 80 ? `<li>…и ещё ${r.warnings.length - 80}</li>` : ''}</ul></details>` : '');
+          if (apply) { go.disabled = true; re(); } else go.disabled = false;
+        };
+        m.querySelector('#sqc').onclick = () => run(false);
+        go.onclick = () => run(true);
+      });
+    };
     ab.querySelectorAll('[data-te]').forEach(b => b.onclick = () => teamForm(T.find(t => t.id === b.dataset.te)));
     ab.querySelectorAll('[data-im]').forEach(b => b.onclick = () => {
       const t = T.find(x => x.id === b.dataset.im);
@@ -5263,12 +5440,10 @@ async function pgAdmin(app) {
       <div class="row sp" style="flex-wrap:wrap;gap:10px;margin-bottom:14px;background:#fef2f2;border:1.5px solid #fca5a5;padding:12px 14px;border-radius:8px">
         <div>
           <div style="font-weight:800;color:#991b1b;font-size:15px">Управление базой футболистов</div>
-          <div class="small" style="color:#7f1d1d;margin-top:2px">Удаление всех игроков или авто-генерация полных составов для клубов всех лиг.</div>
+          <div class="small" style="color:#7f1d1d;margin-top:2px">Удаление всех игроков из базы.</div>
         </div>
         <div class="row" style="gap:8px;flex-wrap:wrap">
           <button class="btn sm" id="btn_clear_all_players" style="background:#dc2626;color:#fff;font-weight:800;cursor:pointer">🗑️ Удалить всех игроков из базы</button>
-          <button class="btn sm" id="btn_gen_all_players" style="background:#166534;color:#fff;font-weight:800;cursor:pointer">⚡ Сгенерировать составы для всех лиг</button>
-          <button class="btn alt sm" id="btn_gen_club_players" style="font-weight:700">👥 Сгенерировать состав выбранного клуба</button>
         </div>
       </div>
       <div class="row sp" style="flex-wrap:wrap;gap:10px;margin-bottom:14px;background:#eff6ff;border:1.5px solid #bfdbfe;padding:12px 14px;border-radius:8px">
@@ -5299,7 +5474,7 @@ async function pgAdmin(app) {
           <td class="l">${p.verified ? '<span class="tag">нейросеть</span>' : '<span class="tag bg">вручную / пусто</span>'}</td>
           <td style="white-space:nowrap"><button class="btn sm" data-pp="${p.id}" title="Сделать портрет (ИИ)">🧑‍🎨 Портрет</button> <button class="btn alt sm" data-pe="${p.id}">Править</button></td>
         </tr>`;
-      }).join('') || '<tr><td colspan="7" class="empty">В базе данных нет игроков. Вы можете добавить игрока кнопкой «+ Игрок» или нажать «⚡ Сгенерировать составы для всех лиг».</td></tr>'}</tbody></table>`;
+      }).join('') || '<tr><td colspan="7" class="empty">В базе данных нет игроков. Вы можете добавить игрока кнопкой «+ Игрок»</td></tr>'}</tbody></table>`;
       $('#plist').querySelectorAll('[data-pe]').forEach(b => b.onclick = () => pform(l.find(p => p.id === b.dataset.pe)));
       $('#plist').querySelectorAll('[data-pp]').forEach(b => b.onclick = async () => {
         const old = b.textContent;
@@ -5343,16 +5518,6 @@ async function pgAdmin(app) {
     $('#btn_clear_all_players').onclick = async () => {
       if (!confirm('Вы уверены, что хотите удалить ВСЕХ игроков из базы данных? Это действие очистит списки игроков во всех клубах.')) return;
       const r = await act(() => api('/admin/players/clear-all', {}), 'Все игроки удалены из базы данных');
-      if (r) load();
-    };
-    $('#btn_gen_all_players').onclick = async () => {
-      const r = await act(() => api('/admin/players/generate-all', {}), 'Составы всех клубов сгенерированы');
-      if (r) load();
-    };
-    $('#btn_gen_club_players').onclick = async () => {
-      const tid = $('#pt').value;
-      if (!tid) return alert('Сначала выберите клуб в выпадающем списке «Все команды»');
-      const r = await act(() => api('/admin/players/generate-club/' + tid, {}), 'Состав выбранного клуба сформирован');
       if (r) load();
     };
 
@@ -6286,6 +6451,39 @@ async function pgAdmin(app) {
       }
     });
 
+    // ── заявки клубов на покупку тренеров и штаба ──
+    {
+      const so = await api('/admin/staff-offers').catch(() => ({ pending: [], history: [] }));
+      const ap = v => v === 'approved' ? '✅' : v === 'rejected' ? '❌' : v === 'not_required' ? '—' : '⏳';
+      const card = o => `
+        <div class="panel" style="margin-top:8px" data-so="${e(o.id)}">
+          <div><b>${e(o.toName)}</b> → <b>${e(o.staffName)}</b> <span class="muted small">(${e(o.roleTitle)}, из «${e(o.fromName)}»)</span></div>
+          <div class="small" style="margin-top:3px">Компенсация: <b>${e(o.fee)}</b>${o.note ? ' · ' + e(o.note) : ''}${o.replaces?.length ? ` · <span style="color:#991b1b">освободит должность: ${e(o.replaces.join(', '))}</span>` : ''}</div>
+          ${o.leavesVacancy ? '<div class="small" style="color:#991b1b;margin-top:3px">⚠ У клуба-продавца опустеет обязательная должность</div>' : ''}
+          <div class="small muted" style="margin-top:4px">Клуб-продавец: ${ap(o.clubApproval)} · Админ: ${ap(o.adminApproval)}</div>
+          <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
+            <button class="btn sm so-ok">Одобрить</button>
+            ${o.needClub && o.clubApproval !== 'approved' ? '<button class="btn sm so-force" title="Одобрить за клуб-продавца">Одобрить принудительно</button>' : ''}
+            <button class="btn sm warn so-no">Отклонить</button>
+          </div>
+        </div>`;
+      ab.insertAdjacentHTML('afterbegin', `
+        <div class="panel" style="margin-bottom:14px">
+          <h3 style="margin:0">🧑‍🏫 Заявки на тренеров и штаб${so.pending.length ? ` (${so.pending.length})` : ''}</h3>
+          ${so.pending.length ? so.pending.map(card).join('') : '<p class="muted small" style="margin:6px 0 0">Новых заявок нет.</p>'}
+        </div>`);
+      ab.querySelectorAll('[data-so]').forEach(box => {
+        const offerId = box.dataset.so;
+        const go = (action, force, okMsg) => async () => {
+          const r = await act(() => api('/admin/staff-offer/respond', { offerId, action, force }), x => x.message || okMsg);
+          if (r) re();
+        };
+        box.querySelector('.so-ok').onclick = go('approve', false);
+        const f = box.querySelector('.so-force'); if (f) f.onclick = go('approve', true);
+        box.querySelector('.so-no').onclick = go('reject', false);
+      });
+    }
+
     ab.querySelectorAll('[data-ai-club]').forEach(b => b.onclick = async () => {
       const clubId = b.dataset.aiClub;
       const r = await act(() => api('/admin/transfer-requests/check-ai', { clubId }), 'Проверка всех заявок клуба завершена');
@@ -6950,6 +7148,55 @@ async function pgAdmin(app) {
     }
 
     renderBudgetView();
+  }
+  else if (AT === 'aiq') {
+    const q = await api('/admin/ai-queue');
+    const fmt = ms => new Date(ms).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const hm = ms => new Date(ms).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const ST = { wait: ['ждёт', '#2563eb'], queued: ['в очереди на запрос', '#b45309'], gen: ['идёт запрос к ИИ', '#b45309'], hold: ['готов, ждёт начала', '#166534'], live: ['в эфире', '#dc2626'], overdue: ['пропущен (запуск вручную)', '#6b7280'], excluded: ['исключён из автозапуска', '#6b7280'], error: ['ошибка — нужен ручной запуск', '#dc2626'] };
+    ab.innerHTML = `
+    <div class="panel"><h3>Очередь нейросети</h3>
+      <p class="muted small" style="margin:0 0 8px">ИИ доступен только администратору. По расписанию реального времени сами играются только <b>РПЛ, Кубок России (и Суперкубок) и переходные матчи</b>: запрос уходит за ${q.leadSec} с до начала и только для этого матча (${q.items.some(i => !i.light) ? '2 запроса: по тайму' : 'по тайму'}). Первая и Вторая лиги и Медиалига запускаются только вручную и симулируются одним запросом — счёт и статистика.</p>
+      <div class="row" style="gap:14px;flex-wrap:wrap;margin-bottom:8px">
+        <span class="tag" style="background:${q.auto ? '#f0fdf4' : '#fef2f2'};color:${q.auto ? '#166534' : '#991b1b'}">Автозапуск: ${q.auto ? 'включён' : 'выключен (Настройки)'}</span>
+        <span class="tag">Ключей: ${q.keys}${q.keysCooling ? ` (на паузе: ${q.keysCooling})` : ''}</span>
+        <span class="tag">Идёт запросов: ${q.running} · в очереди: ${q.queued}</span>
+        <span class="tag">За час: ${q.lastHour.ok} успешных, ${q.lastHour.fail} ошибок</span>
+      </div>
+      <div class="row" style="gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div><label>Запрос за … сек до матча</label><input id="aq_lead" type="number" min="0" max="900" value="${q.leadSec}" style="width:120px"></div>
+        <div><label>Макс. запросов на матч</label><input id="aq_cap" type="number" min="1" value="${q.maxAiCalls}" style="width:120px"></div>
+        <div><label>Матчей одновременно</label><input id="aq_par" type="number" min="1" value="${q.parallel}" style="width:120px"></div>
+        <button class="btn sm" id="aq_save">Сохранить</button>
+      </div>
+    </div>
+    <div class="panel"><h3>Запланированные симуляции (ближайшие 14 дней)</h3>
+      ${q.items.length ? `<div class="wrap"><table><thead><tr><th class="l">Матч</th><th class="l">Турнир</th><th class="l">Начало</th><th class="l">Запрос к ИИ</th><th>Запросов</th><th class="l">Статус</th><th></th></tr></thead><tbody>${q.items.map(i => {
+        const [t, c] = ST[i.state] || [i.state, '#111'];
+        return `<tr><td class="l">${e(i.home)} — ${e(i.away)}</td><td class="l">${e(i.comp)}<div class="muted small">${e(i.round || '')}</div></td><td class="l">${fmt(i.startAt)}</td><td class="l">${i.auto ? hm(i.triggerAt).slice(0, 8) + ' · ' + fmt(i.triggerAt).slice(0, 5) : '<span class="muted">вручную</span>'}</td><td>${i.aiCalls ? i.aiCalls + ' / ' : ''}${i.requests}${i.light ? ' (сводка)' : ''}</td><td class="l"><span style="color:${c};font-weight:600">${t}</span>${i.err ? `<div class="muted small">${e(i.err)}</div>` : ''}</td><td><div class="row" style="gap:4px;justify-content:flex-end">
+          ${i.state === 'queued' ? `<button class="btn alt sm" data-qdeq="${i.id}">Убрать из очереди</button>` : ''}
+          ${['wait', 'overdue', 'error', 'excluded'].includes(i.state) ? `<button class="btn sm" data-qrun="${i.id}">Запустить сейчас</button>` : ''}
+          ${i.auto && ['wait', 'error', 'overdue'].includes(i.state) ? `<button class="btn alt sm" data-qtog="${i.id}" data-v="1">Исключить из авто</button>` : ''}
+          ${i.auto && i.state === 'excluded' ? `<button class="btn alt sm" data-qtog="${i.id}" data-v="0">Вернуть в авто</button>` : ''}
+        </div></td></tr>`;
+      }).join('')}</tbody></table></div>` : '<div class="empty">Нет матчей в очереди и на ближайшие 14 дней.</div>'}
+    </div>`;
+    $('#aq_save').onclick = async () => {
+      await act(() => api('/admin/settings', { aiLeadSec: +$('#aq_lead').value, maxAiCalls: +$('#aq_cap').value, aiParallel: +$('#aq_par').value }), 'Сохранено');
+      re();
+    };
+    ab.querySelectorAll('[data-qrun]').forEach(b => b.onclick = async () => {
+      const r = await act(() => api('/admin/run', { fid: b.dataset.qrun }), 'Матч запущен');
+      if (r) setTimeout(re, 800);
+    });
+    ab.querySelectorAll('[data-qtog]').forEach(b => b.onclick = async () => {
+      await act(() => api('/admin/ai-queue/toggle', { id: b.dataset.qtog, noAuto: b.dataset.v === '1' }), b.dataset.v === '1' ? 'Исключён из автозапуска' : 'Возвращён в автозапуск');
+      re();
+    });
+    ab.querySelectorAll('[data-qdeq]').forEach(b => b.onclick = async () => {
+      await act(() => api('/admin/ai-queue/dequeue', { id: b.dataset.qdeq }), 'Убран из очереди');
+      re();
+    });
   }
   else if (AT === 'settings') {
     const s = ov.settings, k = ov.keys, mo = ov.models || {};

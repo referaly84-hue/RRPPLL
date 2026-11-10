@@ -6,13 +6,16 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { fileURLToPath } from 'url';
 import { getTeamLogo, getTeamColors, getCompetitionLogo } from './src/logos.ts';
 import { LEAGUE_REGULATIONS, getTeamZoneClass, getRplLegionLimit, isLegionnaire, getLegionnaireStatus } from './src/rules.ts';
 import { getTeamCoach, computeCoachSynergy, type Coach, STAFF_ROLES, type StaffRole, type StaffMember, generateClubStaff, getAllInitialStaff } from './src/coaches.ts';
 import { computeMatchRatings, getMatchMotm, buildTeamOfRound, buildTeamOfMonth } from './src/awards.ts';
 import { GoogleGenAI } from '@google/genai';
-import { fbInit, fbSyncCodes, fbSaveSession, fbDeleteSession, fbActive, fbLoadState, fbQueueState, fbQueueMatch, fbRestoreMatches, fbFlush } from './firebase_auth.ts';
+import { pgInit, pgActive, pgConfigured, pgHasData, pgLoadState, pgLoadMatches, pgLoadSessions, pgLoadCodes, pgImportAll, pgQueueState, pgQueueMatch, pgDeleteMatch, pgDeleteAllMatches, pgSaveSession, pgDeleteSession, pgSyncCodes, pgFlush, type CodeReg } from './pg_store.ts';
+import { collectLegacy } from './pg_migrate.ts';
+import { parseSquads, runImport } from './src/squad_import.ts';
 import { initCup2026, recalculateCupGroups, drawNextRegionsRound, CUP_FINAL_VENUE, getCupFinalVenue } from './src/cup2026.ts';
 import { CLIMATE_DATA, calculateMatchWeather, ALL_TEAMS_GEO, generateFullSquad, getOrCreateCityClimate } from './src/squads_and_weather.ts';
 import { familyNamesOf } from './src/club_families.ts';
@@ -114,16 +117,16 @@ const codeKey = (s: any) => {
   return str;
 };
 let codeReg: { admin?: string; clubs: Record<string, string> } = { clubs: {} };
-let fbCodes: { admin?: string; clubs: Record<string, string> } | null = null; // снимок из Firestore
+let pgCodes: CodeReg | null = null; // снимок кодов из PostgreSQL
 function loadCodeRegistry() {
-  if (fbActive && fbCodes) { codeReg = { admin: fbCodes.admin, clubs: { ...fbCodes.clubs } }; return; }
+  if (pgActive && pgCodes) { codeReg = { admin: pgCodes.admin, clubs: { ...pgCodes.clubs } }; return; }
   try {
     const j = JSON.parse(fs.readFileSync(CODES_FILE, 'utf8'));
     codeReg = { admin: j.admin, clubs: (j.clubs && typeof j.clubs === 'object') ? j.clubs : {} };
   } catch { codeReg = { clubs: {} }; }
 }
 function saveCodeRegistry() {
-  if (fbActive) { fbCodes = { admin: codeReg.admin, clubs: { ...codeReg.clubs } }; fbSyncCodes(codeReg); return; }
+  if (pgActive) { pgCodes = { admin: codeReg.admin, clubs: { ...codeReg.clubs } }; pgSyncCodes(codeReg); return; }
   try {
     fs.writeFileSync(CODES_FILE + '.tmp', JSON.stringify(codeReg, null, 2));
     fs.renameSync(CODES_FILE + '.tmp', CODES_FILE);
@@ -237,32 +240,31 @@ const FNL_TEAMS: [string, string, number, number, string][] = [
 
 const LOWER: Record<string, string[]> = {
   '2la_gold': [
-    'Сокол', 'Динамо Брянск', 'Алания', 'Родина-2', 'Динамо Киров',
-    'Амкар', 'Тюмень', 'Динамо Владивосток', 'Сибирь', 'Спартак Владикавказ'
+    'Динамо Киров', 'Родина-2', 'Динамо Владивосток', 'Алания', 'Сибирь',
+    'Сокол', 'Динамо Брянск', 'Машук-КМВ', 'Волгарь', 'Калуга'
   ],
   '2la_silver': [
-    'Калуга', 'Торпедо Миасс', 'Волгарь', 'Зенит-2', 'Ротор-2',
-    'Урал-2', 'Крылья Советов-2', 'Балтика-2', 'Родина-3', 'Динамо Ставрополь'
+    'Зенит-2', 'Амкар', 'Тюмень', 'Торпедо Миасс', 'Динамо Ставрополь',
+    'Динамо-2 Москва', 'Иртыш'
   ],
   '2lb_1': [
-    'Севастополь', 'Нарт Черкесск', 'Победа Хасавюрт', 'Ростов-2', 'Дружба Майкоп',
-    'Астрахань', 'Рубин Ялта', 'Ангушт', 'Спартак-Нальчик', 'Динамо-2 Махачкала',
-    'Заря Луганск', 'Кызылташ', 'Нефтяник Ахтырский', 'ПСК Динская', 'Чайка-М', 'Шахтер Донецк'
+    'Севастополь', 'Ростов-2', 'Шахтер Донецк', 'Победа Хасавюрт', 'Рубин Ялта',
+    'Дружба Майкоп', 'Кызылташ', 'Нарт Черкесск', 'Спартак-Нальчик', 'Заря Луганск',
+    'Нефтяник Ахтырский', 'Астрахань', 'Ангушт', 'Чайка-М', 'Динамо-2 Махачкала'
   ],
   '2lb_2': [
-    'Муром', 'Динамо Вологда', 'Иркутск', 'Спартак-2', 'Балтика-БФУ',
-    'Тверь', 'Торпедо Владимир', 'Череповец', 'Чертаново', 'Звезда',
-    'Луки-Энергия', 'Космос Долгопрудный', 'Енисей-2', 'Динамо СПб', 'Искра Смоленск'
+    'Муром', 'Динамо СПб', 'Чертаново', 'Луки-Энергия', 'Балтика-БФУ',
+    'Космос Долгопрудный', 'Тверь', 'Торпедо Владимир', 'Череповец', 'Спартак-2',
+    'Динамо Вологда', 'Звезда', 'Енисей-2', 'Искра Смоленск', 'Иркутск'
   ],
   '2lb_3': [
-    'Авангард Курск', 'Салют Белгород', 'Спартак Тамбов', 'Рязань', 'Металлург Липецк',
-    'Орел', 'Арсенал-2', 'Родина-М', 'Зенит Пенза', 'СКА-Хабаровск-2',
-    'Ротор-2', 'Строгино', 'Квант Обнинск', 'Сатурн Раменское', 'Волна', 'Шумбрат'
+    'Спартак Тамбов', 'Волна', 'Салют Белгород', 'Рязань', 'Металлург Липецк',
+    'Сатурн Раменское', 'Родина-М', 'Шумбрат', 'Орел', 'Авангард Курск',
+    'Строгино', 'СКА-Хабаровск-2', 'Зенит Пенза', 'Ротор-2', 'Арсенал-2', 'Квант Обнинск'
   ],
   '2lb_4': [
-    'Химик', 'КДВ Томск', 'Оренбург-2', 'Динамо Барнаул', 'Рубин-2',
-    'Крылья Советов-2', 'Челябинск-2', 'Акрон-2', 'Урал-2', 'Носта',
-    'Легион', 'Ижевск'
+    'Химик', 'КДВ Томск', 'Победа НН', 'Акрон-2', 'Крылья Советов-2',
+    'Динамо Барнаул', 'Оренбург-2', 'Ижевск', 'Урал-2', 'Рубин-2', 'Носта', 'Челябинск-2'
   ],
   'media': [
     '2Drots', 'Амкал', 'Броуки (Brokeboys)', 'ФК 10', 'Lit Energy', 'СиндЕкат',
@@ -273,6 +275,13 @@ const LOWER: Record<string, string[]> = {
   ]
 };
 
+/* Клубы, которых в лигах больше нет (вычищаются при запуске, если за ними нет игроков, матчей и штаба).
+   «Балтика-2» и «Родина-3» — дубли «Балтика-БФУ» и «Родина-М» (те же клубы во Второй лиге Б). */
+const DROPPED_TEAMS = [
+  'Rocket Team', 'Банка', 'Чисто Питер', 'Эгриси',
+  'Спартак Владикавказ', 'ПСК Динская', 'Легион', 'Балтика-2', 'Родина-3'
+];
+
 const COMPS = [
   { id: 'rpl', name: 'РПЛ', type: 'league', tier: 1, level: '1-й уровень (16 команд)', logo: '/logos/leagues/rpl.svg' },
   { id: 'supercup', name: 'Суперкубок России', type: 'cup', level: 'Суперкубок · Матч за трофей', logo: '/logos/leagues/supercup.svg' },
@@ -280,12 +289,12 @@ const COMPS = [
   { id: 'playoff', name: 'Стыковые матчи', type: 'cup', tier: 1, level: 'Переходные стыки лиг', logo: '/logos/leagues/rpl.svg' },
   { id: 'fnl', name: 'Первая лига', type: 'league', tier: 2, level: '2-й уровень (18 команд)', logo: '/logos/leagues/fnl.svg' },
   { id: '2la_gold', name: 'Вторая лига А · Золото', type: 'league', tier: 3, cat: '2la', level: '3-й уровень (10 команд)', logo: '/logos/leagues/2la.svg' },
-  { id: '2la_silver', name: 'Вторая лига А · Серебро', type: 'league', tier: 3, cat: '2la', level: '3-й уровень (10 команд)', logo: '/logos/leagues/2la.svg' },
-  { id: '2lb_1', name: 'Вторая лига Б · Группа 1 (Юг)', type: 'league', tier: 4, cat: '2lb', level: '4-й уровень (16 команд)', logo: '/logos/leagues/2lb.svg' },
+  { id: '2la_silver', name: 'Вторая лига А · Серебро', type: 'league', tier: 3, cat: '2la', level: '3-й уровень (7 команд)', logo: '/logos/leagues/2la.svg' },
+  { id: '2lb_1', name: 'Вторая лига Б · Группа 1 (Юг)', type: 'league', tier: 4, cat: '2lb', level: '4-й уровень (15 команд)', logo: '/logos/leagues/2lb.svg' },
   { id: '2lb_2', name: 'Вторая лига Б · Группа 2 (Запад)', type: 'league', tier: 4, cat: '2lb', level: '4-й уровень (15 команд)', logo: '/logos/leagues/2lb.svg' },
   { id: '2lb_3', name: 'Вторая лига Б · Группа 3 (Центр)', type: 'league', tier: 4, cat: '2lb', level: '4-й уровень (16 команд)', logo: '/logos/leagues/2lb.svg' },
   { id: '2lb_4', name: 'Вторая лига Б · Группа 4 (Урал)', type: 'league', tier: 4, cat: '2lb', level: '4-й уровень (12 команд)', logo: '/logos/leagues/2lb.svg' },
-  { id: 'media', name: 'Winline Медийная футбольная лига (7-сезон)', type: 'league', tier: 5, level: 'Медиалига · 2 группы по 6 команд', logo: '/logos/leagues/media.svg' },
+  { id: 'media', name: 'Winline Медийная футбольная лига (7-сезон)', type: 'league', tier: 5, level: 'Медиалига · 12 команд', logo: '/logos/leagues/media.svg' },
   { id: 'media_div2', name: 'Второй дивизион (Медиалига)', type: 'league', tier: 6, level: '8 команд · Плей-офф топ-4', logo: '/logos/leagues/media.svg' },
   { id: 'media_cup', name: 'Winline Кубок Лиги (2026)', type: 'cup', tier: 5, level: '20 команд · 4 группы по 5 команд', logo: '/logos/leagues/media.svg' },
   { id: 'friendly_match', name: 'Товарищеские матчи', type: 'friendly', level: 'Товарищеские матчи в паузы на сборные', logo: '/logos/leagues/cup.svg' }
@@ -762,9 +771,12 @@ function assignFixtureWeather(f: any) {
 }
 
 let db: any;
+let PG_STATE: any = null; // база, прочитанная из PostgreSQL при старте
 function load() {
   try {
-    db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    if (PG_STATE) { db = PG_STATE; PG_STATE = null; }
+    else if (pgActive) db = seed(); // PostgreSQL подключён, но данных в нём ещё нет — чистая база
+    else db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
   } catch {
     db = seed();
   }
@@ -774,7 +786,7 @@ function load() {
   }
   // Старый лимит заявки (25) поднимаем до 28
   if (db.settings.squadMax === 25) db.settings.squadMax = 28;
-  for (const k of ['comps', 'teams', 'players', 'fixtures', 'derbies', 'transfers', 'llmlog', 'tournaments', 'transferRequests', 'budgetHistory']) {
+  for (const k of ['comps', 'teams', 'players', 'fixtures', 'derbies', 'transfers', 'llmlog', 'tournaments', 'transferRequests', 'budgetHistory', 'staffOffers', 'staffRoles']) {
     if (!Array.isArray(db[k])) db[k] = [];
   }
   if (!db.referees || db.referees.length < 26) db.referees = JSON.parse(JSON.stringify(DEFAULT_REFEREES));
@@ -806,7 +818,7 @@ function load() {
 
   // Синхронизируем географию команд для всех лиг
   for (const t of (db.teams || [])) {
-    const geo = ALL_TEAMS_GEO[t.name];
+    const geo = (ALL_TEAMS_GEO as any)[t.name];
     if (geo) {
       if (!t.city) t.city = geo.city;
       if (!t.stadium) t.stadium = geo.stadium;
@@ -866,6 +878,21 @@ function load() {
     for (const name of LOWER[c]) wantedMap.set(name, { comp: c });
   }
 
+  // Убираем клубы, исключённые из лиг (только «пустые»: без игроков, матчей, заявки и штаба)
+  for (const name of DROPPED_TEAMS) {
+    if (wantedMap.has(name)) continue;
+    const dt = db.teams.find((x: any) => x.name === name);
+    if (!dt) continue;
+    const busy = db.players.some((pl: any) => pl.teamId === dt.id)
+      || db.fixtures.some((fx: any) => fx.home === dt.id || fx.away === dt.id)
+      || (db.squads?.[dt.id] || []).length > 0
+      || (db.staff || []).some((sm: any) => sm.teamId === dt.id);
+    if (busy) { console.warn(`[лиги] «${name}» исключён из лиг, но за клубом есть игроки/матчи/штаб — оставлен, уберите вручную`); continue; }
+    db.teams = db.teams.filter((x: any) => x.id !== dt.id);
+    for (const k of ['squads', 'tactics']) if (db[k]) delete db[k][dt.id];
+    db.derbies = (db.derbies || []).filter((d: any) => d.a !== dt.id && d.b !== dt.id);
+  }
+
   // Дедуплицируем db.teams по имени (оставляя существующие команды с логотипами и добавляя недостающие)
   const UPPER_DUPES = new Set(['2DROTS', 'АМКАЛ', 'BROKE BOYS', 'LIT ENERGY', 'СИНДЕКАТ', 'СКА РОСТОВ', 'НАРОДНАЯ КОМАНДА', 'FIGHT NIGHTS', 'PRIME SQUAD', 'ФК Апсны', 'ФК МАТЧ']);
   const seenNames = new Set<string>();
@@ -893,14 +920,15 @@ function load() {
   // Добавляем новые команды в базу
   for (const [name, w] of wantedMap.entries()) {
     if (!db.teams.some((t: any) => t.name === name)) {
+      const geo: any = (ALL_TEAMS_GEO as any)[name] || {};
       db.teams.push({
         id: uid(),
         name,
         comp: w.comp,
-        city: w.city || '',
-        lat: w.lat ?? null,
-        lon: w.lon ?? null,
-        stadium: w.stadium || '',
+        city: w.city || geo.city || '',
+        lat: w.lat ?? geo.lat ?? null,
+        lon: w.lon ?? geo.lon ?? null,
+        stadium: w.stadium || geo.stadium || '',
         code: (w.comp === 'rpl' || w.comp === 'fnl') ? mkCode() : '',
         logo: getTeamLogo(name, null, w.comp)
       });
@@ -958,10 +986,9 @@ function saveNow() {
       }
     }
     db._savedAt = Date.now();
-    const json = JSON.stringify(fbActive ? { ...db, sessions: {} } : db);
-    fs.writeFileSync(DB_FILE + '.tmp', json);
+    if (pgActive) { pgQueueState(() => db); return; } // PostgreSQL: пишутся только изменившиеся строки
+    fs.writeFileSync(DB_FILE + '.tmp', JSON.stringify(db));
     fs.renameSync(DB_FILE + '.tmp', DB_FILE);
-    fbQueueState(() => json);
   } catch (e: any) {
     console.error('save:', e.message);
   }
@@ -970,6 +997,7 @@ function saveNow() {
 const mcache = new Map<string, any>();
 const getMatch = (id: string) => {
   if (mcache.has(id)) return mcache.get(id);
+  if (pgActive) return null; // все матчи загружены из PostgreSQL при старте
   try {
     const m = JSON.parse(fs.readFileSync(path.join(MDIR, id + '.json'), 'utf8'));
     mcache.set(id, m);
@@ -981,8 +1009,8 @@ const getMatch = (id: string) => {
 };
 const putMatch = (id: string, m: any) => {
   mcache.set(id, m);
+  if (pgActive) { pgQueueMatch(id, () => m); return; }
   fs.writeFileSync(path.join(MDIR, id + '.json'), JSON.stringify(m));
-  fbQueueMatch(id, () => JSON.stringify(m));
 };
 
 /* ───────── доступ к данным ───────── */
@@ -1049,8 +1077,60 @@ function loanFromName(tid: string, pid: string): string | null {
 function isAvail(p: any, date: string) {
   if (!p) return false;
   if (p.banLeft > 0) return false;
+  if (p.banUntil && p.banUntil >= date) return false;
   if (p.out && p.out.until >= date) return false;
   return true;
+}
+/* ───────── дисциплина: сроки дисквалификаций и травм в «родных» единицах ───────── */
+const ruPlural = (n: number, a: string, b: string, c: string) => {
+  const m = Math.abs(n) % 100, d = m % 10;
+  return m > 10 && m < 20 ? c : d === 1 ? a : d >= 2 && d <= 4 ? b : c;
+};
+const ruDateStr = (d: string) => { const [y, m, dd] = String(d || '').split('-'); return y && m && dd ? `${dd}.${m}.${y}` : String(d || ''); };
+/* срок в днях → «3 месяца» / «2 недели» / «10 дней» */
+function daysLabel(d: number): string {
+  d = Math.max(1, Math.round(d));
+  if (d >= 45) { const n = Math.round(d / 30); return `${n} ${ruPlural(n, 'месяц', 'месяца', 'месяцев')}`; }
+  if (d >= 14) { const n = Math.round(d / 7); return `${n} ${ruPlural(n, 'неделя', 'недели', 'недель')}`; }
+  return `${d} ${ruPlural(d, 'день', 'дня', 'дней')}`;
+}
+/* дисквалификация: «1 матч», «3 матча», «до 15.01.2027 (2 месяца), все турниры» */
+function banText(p: any, date?: string): string {
+  if (!p) return '';
+  const parts: string[] = [];
+  if (p.banLeft > 0) parts.push(`${p.banLeft} ${ruPlural(p.banLeft, 'матч', 'матча', 'матчей')}`);
+  if (p.banUntil && (!date || p.banUntil >= date)) parts.push(`до ${ruDateStr(p.banUntil)}${p.banLabel ? ` (${p.banLabel})` : ''}, все турниры`);
+  return parts.join(' + ');
+}
+/* травма: «3 месяца (до 10.02.2027)» */
+function outText(p: any, date?: string): string {
+  if (!p || !p.out || !p.out.until) return '';
+  if (date && p.out.until < date) return '';
+  const lbl = p.out.label || (p.out.days ? daysLabel(p.out.days) : '');
+  return `${lbl ? lbl + ' ' : ''}(до ${ruDateStr(p.out.until)})`.trim();
+}
+function unavailText(p: any, date: string): string {
+  const out: string[] = [];
+  const b = banText(p, date);
+  if (b) out.push(`дисквалификация: ${b}${p.banReason ? ` — ${p.banReason}` : ''}`);
+  const o = outText(p, date);
+  if (o) out.push(`травма: ${o}`);
+  return out.join('; ');
+}
+/* дисциплина главного тренера и штаба (жёлтые/красные получают не только футболисты) */
+function discKey(tid: string, name: string) { return `${tid}|${norm(name)}`; }
+function getDisc(tid: string, name: string) {
+  if (!db.staffDiscipline || typeof db.staffDiscipline !== 'object') db.staffDiscipline = {};
+  const k = discKey(tid, name);
+  if (!db.staffDiscipline[k]) db.staffDiscipline[k] = { tid, name, yc: 0, banLeft: 0, reason: '' };
+  return db.staffDiscipline[k];
+}
+function bannedStaffText(tid: string): string[] {
+  const out: string[] = [];
+  for (const d of Object.values<any>(db.staffDiscipline || {})) {
+    if (d.tid === tid && d.banLeft > 0) out.push(`${d.name} — дисквалифицирован ещё на ${d.banLeft} ${ruPlural(d.banLeft, 'матч', 'матча', 'матчей')}${d.reason ? ` (${d.reason})` : ''}, на скамейке и в технической зоне отсутствует`);
+  }
+  return out;
 }
 /* Сегодняшняя дата (YYYY-MM-DD) по Москве */
 function todayMsk(): string {
@@ -1886,6 +1966,11 @@ function getGeminiKeys(): string[] {
   }
   return res;
 }
+/* ───────── доступ к ИИ: только администратор (или планировщик матчей от его имени) ─────────
+   Контекст создаётся в middleware сессии: ai=true только у админа. Всё остальное (клубы, гости) не может
+   вызвать нейросеть ни через какой маршрут — llm() выбросит ошибку, а hasLLM() вернёт false. */
+const aiCtx = new AsyncLocalStorage<{ ai: boolean; calls: number; cap?: number }>();
+const aiAllowed = () => !!aiCtx.getStore()?.ai;
 function provList() {
   const k = db.settings.keys || {}, m = db.settings.models || {}, L: any[] = [];
   const gKeys = getGeminiKeys();
@@ -1899,13 +1984,13 @@ function provList() {
   if (o) L.push({ n: 'openrouter', id: 'openrouter', key: o, base: 'https://openrouter.ai/api/v1', model: process.env.OPENROUTER_MODEL || m.openrouter || 'openrouter/free', max: 8000 });
   return L;
 }
-const hasLLM = () => provList().length > 0;
+const hasLLM = () => provList().length > 0 && aiAllowed();
 function httpErr(status: number, body: any) {
   const raw = JSON.stringify(body);
   return Object.assign(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`), { status, daily: /PerDay|per day|daily/i.test(raw) });
 }
 async function callProv(p: any, sys: string, user: string, o: any) {
-  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 170000);
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 240000);
   try {
     if (p.n === 'gemini') {
       const body: any = {
@@ -1945,6 +2030,8 @@ const coolKey = (p: any, e: any) => {
   keyCooldown.set(p.key, Date.now() + ms);
 };
 async function llm(sys: string, user: string, { json = true, task = '', temp = 0.9, max = 16000, grounded = false } = {}) {
+  const cx = aiCtx.getStore();
+  if (!cx?.ai) throw Object.assign(new Error('ИИ доступен только администратору'), { noLLM: true });
   const all = provList();
   if (!all.length) throw Object.assign(new Error('Нет ключей нейросети'), { noLLM: true });
   const now0 = Date.now();
@@ -1953,6 +2040,8 @@ async function llm(sys: string, user: string, { json = true, task = '', temp = 0
   let last: any;
   for (const p of L) {
     for (let a = 0; a < 2; a++) {
+      if (cx.cap && cx.calls >= cx.cap) throw Object.assign(new Error(`лимит ИИ-запросов на матч (${cx.cap}) исчерпан`), { capped: true });
+      cx.calls++;
       const t0 = Date.now();
       try {
         const text = await callProv(p, sys, user, { json, temp, max, grounded });
@@ -1964,6 +2053,7 @@ async function llm(sys: string, user: string, { json = true, task = '', temp = 0
         llog({ task, p: p.id || p.n, ok: 0, ms: Date.now() - t0, err: e.message.slice(0, 160) });
         if (e.status === 429 || e.status === 401 || e.status === 403) coolKey(p, e);
         if (e.status === 429) {
+          cx.calls--; // отклонённый по лимиту запрос не считается
           console.warn(`[LLM Failover] Ключ ${p.id || p.n} исчерпал лимит (HTTP 429). Мгновенное переключение на резервный ключ...`);
           await sleep(500);
           break;
@@ -2264,7 +2354,7 @@ async function buildCtx(f: any) {
   ctx.race = top.length ? top.map((x: any) => `${x.n} (${tn(x.t)}) — ${x.g}`).join('; ') : 'пока нет данных';
   ctx.weather = await weather(H, f.date, f.time);
   ctx.fat = { home: fatText(f.home, f), away: fatText(f.away, f) };
-  const miss = (s: string) => squadOf(f[s]).filter((p: any) => !isAvail(p, f.date)).map((p: any) => `${p.name} (${p.banLeft > 0 ? 'дисквалификация' : 'травма'})`);
+  const miss = (s: string) => squadOf(f[s]).filter((p: any) => !isAvail(p, f.date)).map((p: any) => `${p.name} (${unavailText(p, f.date) || 'недоступен'})`);
   ctx.missing = { home: miss('home'), away: miss('away') };
 
   const cH = getCoachForTeam(f.home), cA = getCoachForTeam(f.away);
@@ -2280,6 +2370,7 @@ async function buildCtx(f: any) {
     home: staffSummary(f.home),
     away: staffSummary(f.away)
   };
+  ctx.staffBans = { home: bannedStaffText(f.home), away: bannedStaffText(f.away) };
   const comp = f.comp;
   const rows = table(comp, f.date);
   const rH = rows.find((x: any) => x.id === f.home);
@@ -2322,9 +2413,9 @@ async function buildCtx(f: any) {
 function lineText(ctx: any, s: string) {
   const L = ctx.lineup[s], f = ctx.date, sd = ctx.sides[s];
   const row = (pid: string) => cardLine(player(pid), f);
-  return `СОСТАВ ${sd.name} (схема ${L.formation}), стартовые 11:\n${L.starters.map((p: string) => '- ' + row(p)).join('\n')}\nСкамейка запасных:\n${L.bench.map((p: string) => '- ' + row(p)).join('\n')}\nНедоступны (травмы/дисквалификации): ${ctx.missing[s].join(', ') || 'нет'}`;
+  return `СОСТАВ ${sd.name} (схема ${L.formation}), стартовые 11:\n${L.starters.map((p: string) => '- ' + row(p)).join('\n')}\nСкамейка запасных:\n${L.bench.map((p: string) => '- ' + row(p)).join('\n')}\nНедоступны (травмы/дисквалификации, в скобках срок возвращения): ${ctx.missing[s].join('; ') || 'нет'}\nЖёлтые карточки в текущем цикле (при 4-й игрок пропускает следующий матч): ${[...L.starters, ...L.bench].map((pid: string) => player(pid)).filter((p: any) => p && (p.seasonYC || 0) % 4 > 0).map((p: any) => `${p.name} — ${(p.seasonYC || 0) % 4}/4`).join(', ') || 'ни у кого нет'}\nДисквалифицированные тренеры/штаб: ${ctx.staffBans?.[s]?.join('; ') || 'нет'}`;
 }
-function buildUser(ctx: any, a: number, b: number, st: any, issues: string) {
+function buildUser(ctx: any, a: number, b: number, st: any, issues: string, mode: 'full' | 'light' = 'full') {
   const H = ctx.sides.home.name, A = ctx.sides.away.name;
   const sp = (s: string) => (ctx.lineup[s].speech || '').trim() ? `«${ctx.lineup[s].speech.trim()}»` : '(тренер промолчал перед выходом — команда действует по стандартному плану)';
   const tr = (s: string) => (ctx.lineup[s].training || '').trim() ? `«${ctx.lineup[s].training.trim()}»` : '(тренировочный микроцикл: общекомандная подготовка, отработка тактических связок и стандартов)';
@@ -2359,7 +2450,7 @@ function buildUser(ctx: any, a: number, b: number, st: any, issues: string) {
     u += `- Предупреждения (ЖК): ${H}: ${st.yellows.home.join(', ') || 'нет'} | ${A}: ${st.yellows.away.join(', ') || 'нет'}\n`;
     u += `- Удаления (КК): ${st.reds.join(', ') || 'нет'}\n`;
     u += `- Покинули поле (травма/замена): ${st.off.join(', ') || 'нет'}\n`;
-    u += `- Использовано замен: ${H} ${st.subs.home}/5, ${A} ${st.subs.away}/5 (вышли: ${st.ins.join(', ') || 'нет'})\n`;
+    u += `- Использовано замен: ${H} ${st.subs.home}/5 игроков в ${st.slots.home}/3 окнах, ${A} ${st.subs.away}/5 игроков в ${st.slots.away}/3 окнах (вышли: ${st.ins.join(', ') || 'нет'}). Новое окно замен открывать можно, только если использовано меньше 3.\n`;
     if (st.note) u += `- Ход игры и моментум: ${st.note}\n`;
     u += `- Хроника последних минут: ${st.last.join(' | ') || 'начало встречи'}\n\n`;
   }
@@ -2402,12 +2493,31 @@ function buildUser(ctx: any, a: number, b: number, st: any, issues: string) {
     u += `\nВНИМАНИЕ! Прошлая попытка генерации была отклонена: ${issues}. Строго устрани указанные замечания!\n`;
   }
 
-  u += `\nСгенерируй отрезок матча (минуты ${a}–${b}) строго в валидном JSON без markdown-обёртки по правилам 10 разделов симулятора.`;
+  if (mode === 'light') {
+    u += `\nСгенерируй сводку всего матча (минуты 1–90) строго в валидном JSON без markdown-обёртки. Прематч и поминутная хроника не нужны.`;
+    return u;
+  }
+  const span = b - a + 1;
+  u += `\nСгенерируй отрезок матча (минуты ${a}–${b}) строго в валидном JSON без markdown-обёртки по правилам промпта (раздел 10 — формат вывода).`;
+  u += ` Ориентир по числу игровых событий в этом отрезке: ${Math.round(span / 45 * 70)}–${Math.round(span / 45 * 150)}.`;
+  if (a === 1) u += ` Это НАЧАЛО эфира: сначала прематч по разделу 0 (события с отрицательными минутами от -15 до -1 и допустимыми для него типами), затем kickoff на 1-й минуте и игра.`;
+  else u += ` Прематч уже прошёл: события с отрицательными минутами НЕ создавай, продолжай ровно с минуты ${a}.`;
+  if (b >= 90) u += ` Это конец матча: заверши событием fulltime; после финального свистка по разделу 0.8 можно добавить 1–3 события (min 90–95, типы crowd | tactical_note | incident).`;
   return u;
 }
 
 /* ───────── обработка событий ───────── */
-const TYPES = new Set('kickoff possession pass dribble tackle duel foul yellow red shot save miss post goal own_goal penalty offside corner freekick injury sub var ref_error incident cooling_break highlight halftime fulltime'.split(' '));
+const PRE_TYPES = new Set('commentator_intro tactical_note stat_display crowd incident lineup walkout anthem coin_toss photo warmup kickoff_buildup'.split(' '));
+const TYPES = new Set(('kickoff possession pass dribble tackle duel foul yellow red shot save miss post goal own_goal penalty offside corner freekick injury sub var ref_error incident cooling_break kit_issue verbal_warning highlight halftime fulltime ' + [...PRE_TYPES].join(' ')).split(' '));
+/* события-«не действия на поле»: на них не распространяется проверка «игрок уже ушёл с поля» */
+const NONACT_TYPES = new Set([...PRE_TYPES, 'var', 'incident', 'cooling_break', 'highlight', 'kit_issue', 'verbal_warning']);
+/* Замены: до 5 игроков, но не более 3 «окон» (подряд идущие замены одной команды в пределах ~1,5 минут — одно окно) */
+const SUB_MAX_PLAYERS = 5, SUB_MAX_WINDOWS = 3;
+function subWindows(times: number[]) {
+  let w = 0, last = -1e9;
+  for (const t of [...times].sort((a, b) => a - b)) { if (t - last > 90) w++; last = t; }
+  return w;
+}
 function indexNames(ctx: any) {
   return Object.entries<string>(ctx.names).map(([pid, n]) => ({ pid, side: ctx.pidSide[pid], full: norm(n), last: norm(n).split(' ').pop() }));
 }
@@ -2426,30 +2536,36 @@ function resolve(idx: any[], name: string, side: string | null) {
   return pick(idx.filter(x => x.last === last));
 }
 function deriveState(events: any[], ctx: any, note?: string) {
-  const st: any = { score: [0, 0], yellows: { home: [], away: [] }, reds: [], off: [], subs: { home: 0, away: 0 }, ins: [], note: note || '', last: events.slice(-8).map(e => `${e.min}' ${e.text}`) };
+  const st: any = { score: [0, 0], yellows: { home: [], away: [] }, reds: [], off: [], subs: { home: 0, away: 0 }, subT: { home: [] as number[], away: [] as number[] }, slots: { home: 0, away: 0 }, ins: [], note: note || '', last: events.slice(-8).map(e => `${e.min}' ${e.text}`) };
   for (const e of events) {
     if (e.type === 'goal') st.score[e.team === 'home' ? 0 : 1]++;
     if (e.type === 'own_goal') st.score[e.team === 'home' ? 0 : 1]++;
     const nm = (i: number) => ctx.names[e.pids?.[i]];
     if (e.type === 'yellow' && nm(0)) st.yellows[e.team]?.push(nm(0));
     if (e.type === 'red' && nm(0)) { st.reds.push(nm(0)); st.off.push(nm(0)); }
-    if (e.type === 'sub') { st.subs[e.team]++; if (nm(1)) st.off.push(nm(1)); if (nm(0)) st.ins.push(nm(0)); }
+    if (e.type === 'sub') { st.subs[e.team]++; st.subT[e.team]?.push(e.min * 60 + (e.sec || 0)); if (nm(1)) st.off.push(nm(1)); if (nm(0)) st.ins.push(nm(0)); }
     if (e.type === 'injury' && nm(0) && (e.out_days === undefined || e.out_days > 0)) st.off.push(nm(0));
   }
+  st.slots = { home: subWindows(st.subT.home), away: subWindows(st.subT.away) };
   return st;
 }
-function normalizeEvents(raw: any[], a: number, b: number, ctx: any, prev: any[]) {
-  if (!Array.isArray(raw) || raw.length < 3) throw new Error('слишком мало событий');
+function normalizeEvents(raw: any[], a: number, b: number, ctx: any, prev: any[], minEv = 3) {
+  if (!Array.isArray(raw) || raw.length < minEv) throw new Error('слишком мало событий');
   const idx = indexNames(ctx), probs: string[] = [], unknown = new Set<string>();
-  const st = deriveState(prev, ctx); const off = new Set(st.off.map(norm)); const subs = { ...st.subs };
+  const st = deriveState(prev, ctx); const off = new Set(st.off.map(norm)); const subs = { ...st.subs }; const subT: any = { home: [...st.subT.home], away: [...st.subT.away] };
   let out: any[] = [];
   for (const e of raw) {
     if (!e || typeof e !== 'object') continue;
     const type = String(e.type || '').toLowerCase().trim();
     if (!TYPES.has(type)) { probs.push('неизвестный тип ' + type); continue; }
     let min = Math.round(+e.min), sec = clamp(Math.round(+e.sec) || 0, 0, 59);
-    if (!(min >= 0)) { probs.push('нет минуты'); continue; }
-    if (min < a - 1 || min > b + 10) { probs.push(`минута ${min} вне периода ${a}–${b}`); continue; }
+    if (!Number.isFinite(min)) { probs.push('нет минуты'); continue; }
+    if (min < 0) {
+      // отрицательные минуты — только прематч (раздел 0 промпта) и только в самом начале матча
+      if (!PRE_TYPES.has(type)) { probs.push('нет минуты'); continue; }
+      if (a !== 1) { probs.push('прематч допустим только в начале матча'); continue; }
+      min = clamp(min, -20, -1);
+    } else if (min < a - 1 || min > b + 10) { probs.push(`минута ${min} вне периода ${a}–${b}`); continue; }
     const pids: string[] = [], names: string[] = [];
     for (const n of (Array.isArray(e.players) ? e.players : [])) {
       const pid = resolve(idx, n, ['home', 'away'].includes(e.team) && !['save', 'sub', 'foul', 'tackle'].includes(type) ? e.team : null);
@@ -2460,31 +2576,58 @@ function normalizeEvents(raw: any[], a: number, b: number, ctx: any, prev: any[]
     if (!team) team = pids[0] ? ctx.pidSide[pids[0]] : 'none';
     if (type === 'own_goal' && !['home', 'away'].includes(team)) { probs.push('автогол без команды'); continue; }
     const actor = (type === 'sub' || type === 'save') ? null : pids[0];
-    if (actor && off.has(norm(ctx.names[actor])) && !['yellow', 'red', 'injury', 'foul'].includes(type) && !['var', 'incident', 'cooling_break', 'highlight'].includes(type)) {
+    if (actor && off.has(norm(ctx.names[actor])) && !['yellow', 'red', 'injury', 'foul'].includes(type) && !NONACT_TYPES.has(type)) {
       probs.push(`${ctx.names[actor]} действует после ухода с поля`);
+    }
+    /* карточки могут получать и главный тренер/штаб (поле person+role), и запасные (они в players) */
+    let cardPerson: string | null = null, cardRole: string | null = null;
+    if ((type === 'yellow' || type === 'red') && !pids[0] && (e.person || e.role)) {
+      const tm = ['home', 'away'].includes(team) ? team : null;
+      const cx = tm ? ctx.coaches?.[tm] : null;
+      const staffList: string[] = cx ? [cx.coach?.name, ...((cx.staff || []).map((x: any) => x.name))].filter(Boolean) : [];
+      const want = norm(e.person || '');
+      const hit = staffList.find(nm => norm(nm) === want) || staffList.find(nm => want && (norm(nm).includes(want) || want.includes(norm(nm))));
+      if (!hit) { probs.push(`карточка лицу вне списка тренеров/штаба: ${e.person || e.role}`); continue; }
+      cardPerson = hit; cardRole = cx?.coach?.name === hit ? 'head' : 'staff';
+      const tid = tm ? ctx.sides?.[tm]?.id : null;
+      const dd = tid ? (db.staffDiscipline || {})[discKey(tid, hit)] : null;
+      if (dd && dd.banLeft > 0) { probs.push(`${hit} дисквалифицирован и не может быть на скамейке`); continue; }
     }
     const outDays = type === 'injury' ? (e.out_days !== undefined ? (isNaN(+e.out_days) ? 14 : clamp(Math.round(+e.out_days), 0, 240)) : 14) : undefined;
     if (type === 'red' && pids[0]) off.add(norm(ctx.names[pids[0]]));
     if (type === 'injury' && pids[0] && (outDays === undefined || outDays > 0)) off.add(norm(ctx.names[pids[0]]));
     if (type === 'sub') {
-      if (['home', 'away'].includes(team)) { if (++subs[team] > 5) probs.push('больше 5 замен'); }
+      if (['home', 'away'].includes(team)) {
+        // жёсткий лимит: не больше 5 игроков и не больше 3 окон замен — лишнюю замену просто отбрасываем
+        const tt = [...subT[team], min * 60 + sec];
+        if (subs[team] + 1 > SUB_MAX_PLAYERS || subWindows(tt) > SUB_MAX_WINDOWS) continue;
+        subs[team]++; subT[team].push(min * 60 + sec);
+      }
       if (pids[1]) off.add(norm(ctx.names[pids[1]]));
     }
     const ev: any = { min, sec, team, type, players: names, pids, text: String(e.text || '').slice(0, 500) };
     if (type === 'shot' || type === 'penalty') ev.xg = clamp(+e.xg || (type === 'penalty' ? 0.76 : 0.08), 0.01, 0.95);
     if (type === 'injury') ev.out_days = outDays;
+    if (type === 'red') {
+      const bm = Math.round(+e.ban_matches);
+      ev.ban_matches = Number.isFinite(bm) && bm >= 1 ? clamp(bm, 1, 20) : 1;
+      const bd = Math.round(+e.ban_days);
+      if (Number.isFinite(bd) && bd > 0) ev.ban_days = clamp(bd, 1, 730);
+      if (e.ban_all === true || e.ban_all === 'true') ev.ban_all = true;
+    }
+    if (cardPerson) { ev.person = cardPerson; ev.role = cardRole; ev.players = []; }
     out.push(ev);
   }
   {
     const g = out.filter(x => x.type === 'goal' || x.type === 'own_goal');
     const tot = st.score[0] + st.score[1] + g.length;
-    if (tot > 10) probs.push('нереалистично много голов (' + tot + '), матч должен выглядеть как настоящий футбол');
+    if (tot > 15) probs.push('нереалистично много голов (' + tot + '), матч должен выглядеть как настоящий футбол');
   }
   if (unknown.size > 4) probs.push('неизвестные игроки (используй только игроков из составов): ' + [...unknown].slice(0, 6).join(', '));
   if (probs.length > 3) throw new Error([...new Set(probs)].slice(0, 6).join('; '));
   out = out.map((e, i) => ({ e, i })).sort((x, y) => (x.e.min * 60 + x.e.sec) - (y.e.min * 60 + y.e.sec) || x.i - y.i).map(x => x.e);
-  if (!out.length) throw new Error('нет валидных событий');
-  const lastMin = out[out.length - 1].min;
+  if (!out.length && minEv > 0) throw new Error('нет валидных событий');
+  const lastMin = out.length ? out[out.length - 1].min : 90;
   if (b === 45 && !out.some(e => e.type === 'halftime')) out.push({ min: Math.max(45, lastMin), sec: 59, team: 'none', type: 'halftime', players: [], pids: [], text: 'Свисток — перерыв.' });
   if (b >= 90 && !out.some(e => e.type === 'fulltime')) out.push({ min: Math.max(90, lastMin), sec: 59, team: 'none', type: 'fulltime', players: [], pids: [], text: 'Финальный свисток!' });
   return out;
@@ -2559,23 +2702,68 @@ async function genPeriod(a: number, b: number, ctx: any, prev: any[], note?: str
       const st = prev.length ? deriveState(prev, ctx, note) : null;
       const user = buildUser(ctx, a, b, st, issues);
       if (!ctx.prompt1) ctx.prompt1 = user;
-      const r = await llmJSON(sys, user, { task: 'match', temp: 0.9, max: 20000 });
+      const r = await llmJSON(sys, user, { task: 'match', temp: 0.9, max: 30000 });
       const evs = normalizeEvents(r.events, a, b, ctx, prev);
       return { events: evs, note: r.state_at_end?.momentum_note || note };
     } catch (e: any) {
       lastErr = e.message;
       issues = e.message;
-      if (e.noLLM) break;
+      if (e.noLLM || e.capped) break;
     }
   }
-  if (b - a >= 14) {
-    const mid = Math.floor((a + b) / 2);
-    const x = await genPeriod(a, mid, ctx, prev, note, depth + 1);
-    const y = await genPeriod(mid + 1, b, ctx, prev.concat(x.events), x.note, depth + 1);
-    return { events: x.events.concat(y.events), note: y.note };
+  throw new Error(`ИИ не вернул корректный период ${a}–${b}: ${lastErr}`);
+}
+
+/* ───────── облегчённый режим: матчи Первой/Второй лиг и Медиалиги — счёт и статистика одним запросом ───────── */
+const LIGHT_SYS_ADD = `
+
+═══ РЕЖИМ СВОДКИ МАТЧА (ПЕРЕОПРЕДЕЛЯЕТ РАЗДЕЛ 10) ═══
+Это матч нижней лиги: поминутная хроника, прематч (раздел 0) и послематчевые реплики не нужны. Учитывай ВСЕ те же данные и правила (составы, форма, тренеры, схемы, погода, газон, судьи, мотивация, турнирное положение), но верни только итог одним JSON: {"events":[...],"stats":{...},"note":"..."}.
+events — только значимые события всего матча (минуты 1–90): все голы и автоголы (players: [автор, ассистент, если есть]), пенальти, жёлтые и красные карточки, травмы, замены, ошибки судьи/VAR. Не более 30 событий, text — одна короткая строка. Поля min/sec/team/type/players/text — как в разделе 10. Никаких pass/dribble/shot/save/possession.
+stats — {"home":{"shots":int,"shots_on_target":int,"xg":число,"corners":int,"fouls":int,"offsides":int,"tackles":int,"possession":int},"away":{...}}. Цифры согласованы с событиями: удары в створ не меньше голов, удары не меньше ударов в створ, фолов не меньше карточек, владение двух команд в сумме 100.
+note — одно предложение об игре. Счёт движок считает по событиям goal/own_goal.`;
+async function genLight(ctx: any) {
+  if (!hasLLM()) return { events: fakePeriod(1, 90, ctx, []), stats: null as any, note: '' };
+  const sys = (db.settings.systemPrompt || SYS_DEFAULT) + LIGHT_SYS_ADD;
+  let issues = '', lastErr = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const user = buildUser(ctx, 1, 90, null, issues, 'light') + '\n\nВерни сводку в режиме сводки: JSON {events, stats, note}.';
+      if (!ctx.prompt1) ctx.prompt1 = user;
+      const r = await llmJSON(sys, user, { task: 'match-light', temp: 0.9, max: 8000 });
+      const events = normalizeEvents(r.events || [], 1, 90, ctx, [], 0);
+      return { events, stats: r.stats || null, note: String(r.note || '') };
+    } catch (e: any) {
+      lastErr = e.message;
+      issues = e.message;
+      if (e.noLLM || e.capped) break;
+    }
   }
-  console.error(`период ${a}-${b}: запасной вариант (${lastErr})`);
-  return { events: fakePeriod(a, b, ctx, prev), note, fallback: true };
+  throw new Error(`ИИ не вернул сводку матча: ${lastErr}`);
+}
+function applyLightStats(st: any, ls: any, ctx: any) {
+  if (!ls) return;
+  const n = (v: any, lo: number, hi: number) => Number.isFinite(+v) && v !== null && v !== '' ? clamp(Math.round(+v), lo, hi) : null;
+  for (const s of ['home', 'away']) {
+    const o = ls[s]; if (!o) continue;
+    const T = st.teams[s];
+    const sot = n(o.shots_on_target, 0, 30), sh = n(o.shots, 0, 40);
+    if (sot !== null) T.sot = Math.max(sot, T.g);
+    T.sh = Math.max(sh !== null ? sh : T.sh, T.sot);
+    const xg = +o.xg; if (Number.isFinite(xg)) T.xg = +clamp(xg, 0, 6).toFixed(2);
+    const co = n(o.corners, 0, 25); if (co !== null) T.co = co;
+    const fo = n(o.fouls, 0, 40); if (fo !== null) T.fo = Math.max(fo, T.yc + T.rc);
+    const of = n(o.offsides, 0, 15); if (of !== null) T.off = of;
+    const tk = n(o.tackles, 0, 50); if (tk !== null) T.tk = tk;
+  }
+  for (const s of ['home', 'away']) {
+    const o = s === 'home' ? 'away' : 'home';
+    st.teams[s].sv = Math.max(0, st.teams[o].sot - st.teams[o].g);
+    const gk = Object.keys(st.players).find(pid => ctx.pidSide[pid] === s && ctx.pos[pid] === 'ВР' && ctx.lineup[s].starters.includes(pid));
+    if (gk) st.players[gk].sv = st.teams[s].sv;
+  }
+  const ph = n(ls.home?.possession, 25, 75);
+  if (ph !== null) st.poss = [ph, 100 - ph];
 }
 
 /* ───────── статистика матча ───────── */
@@ -2590,7 +2778,8 @@ function computeStats(events: any[], ctx: any) {
   for (const s of ['home', 'away']) {
     for (const pid of ctx.lineup[s].starters) start[pid] = 0;
   }
-  const lastMin = events.length ? Math.max(90, events[events.length - 1].min) : 90;
+  const ftEv = events.find((x: any) => x.type === 'fulltime');
+  const lastMin = ftEv ? Math.max(90, ftEv.min) : (events.length ? Math.max(90, events[events.length - 1].min) : 90);
   const playT = new Set(['possession', 'pass', 'dribble', 'tackle', 'shot', 'corner', 'freekick', 'save', 'miss', 'post', 'goal', 'penalty', 'offside']);
   let open: any = null;
   events.forEach((e, i) => {
@@ -2638,7 +2827,14 @@ function computeStats(events: any[], ctx: any) {
 const live: Record<string, { clients: Set<any> }> = {};
 const timers: Record<string, any> = {};
 const fullSim = (f: any) => true;
-const queue: string[] = [];
+/* Какие матчи ИИ пишет сам по расписанию реального времени: РПЛ, Кубок России (+Суперкубок) и переходные (стыки).
+   Остальные лиги админ запускает вручную. Первая/Вторая лиги и Медиалига — облегчённо: счёт и статистика. */
+const AUTO_COMPS = new Set(['rpl', 'cup', 'supercup', 'playoff', 'playoff_rpl_fnl']);
+const isMediaFx = (f: any) => String(f.comp || '').startsWith('media') || String(f.playoffTieId || '').startsWith('media');
+const isAutoFx = (f: any) => AUTO_COMPS.has(f.comp) && !isMediaFx(f);
+const isLightFx = (f: any) => !isAutoFx(f) && (/^(fnl|2la|2lb|media)/.test(String(f.comp || '')) || isMediaFx(f));
+const AI_MAX_LATE_MS = 6 * 3600_000; // матч, просроченный больше чем на 6 часов, сам не стартует — только вручную
+const queue: { id: string; manual: boolean }[] = [];
 let running = 0;
 /* ───────── технические поражения ───────── */
 /** Обязательный тренерский штаб (роли из STAFF_ROLES). Без него команда на матч не допускается. */
@@ -2681,7 +2877,7 @@ function applyTechDefeat(f: any, pr: { home: string[]; away: string[] }): boolea
   try { tg(`⚠️ <b>Техническое поражение</b>\n${esc(tn(f.home))} — ${esc(tn(f.away))}\n${esc(f.note)}`); } catch { }
   return true;
 }
-function enqueue(id: string, force = false) {
+function enqueue(id: string, force = false, manual = true) {
   const f = fx(id);
   if (!f || f.status !== 'scheduled') return;
   if (!force && db.settings.techDefeat !== false && f.comp !== FRIENDLY_COMP) {
@@ -2690,47 +2886,84 @@ function enqueue(id: string, force = false) {
   }
   f.status = 'queued';
   save();
-  queue.push(id);
+  queue.push({ id, manual });
   pumpQ();
 }
 function pumpQ() {
-  while (running < 2 && queue.length) {
+  while (running < (+db.settings.aiParallel || 2) && queue.length) {
     running++;
-    runMatch(queue.shift()!).catch(e => console.error('runMatch', e)).finally(() => { running--; pumpQ(); });
+    const job = queue.shift()!;
+    runMatch(job.id, { manual: job.manual }).catch(e => console.error('runMatch', e)).finally(() => { running--; pumpQ(); });
   }
 }
-async function runMatch(id: string) {
+async function runMatch(id: string, opts: { manual?: boolean } = {}) {
   const f = fx(id);
   f.status = 'generating';
   f.err = '';
+  f.aiCalls = 0;
+  f.hold = null;
   save();
-  try {
-    const ctx = await buildCtx(f);
-    const periods = db.settings.chunks == 6 ? [[1, 15], [16, 30], [31, 45], [46, 60], [61, 75], [76, 90]] : [[1, 45], [46, 90]];
-    let events: any[] = [], note = '', fallback = false;
-    for (const [a, b] of periods) {
-      const r = await genPeriod(a, b, ctx, events, note);
-      events = events.concat(r.events);
-      note = r.note;
-      fallback = fallback || r.fallback;
+  const store = { ai: true, calls: 0, cap: +db.settings.maxAiCalls || 6 };
+  await aiCtx.run(store, async () => {
+    try {
+      const ctx = await buildCtx(f);
+      const light = isLightFx(f);
+      let events: any[] = [], note = '', fallback = false, lightStats: any = null;
+      if (light) {
+        const r = await genLight(ctx); // ОДИН запрос: счёт + статистика
+        events = r.events; lightStats = r.stats; note = r.note;
+      } else {
+        const periods = db.settings.chunks == 6 ? [[1, 15], [16, 30], [31, 45], [46, 60], [61, 75], [76, 90]] : [[1, 45], [46, 90]];
+        for (const [a, b] of periods) {
+          const r = await genPeriod(a, b, ctx, events, note);
+          events = events.concat(r.events);
+          note = r.note;
+          fallback = fallback || r.fallback;
+        }
+      }
+      events.forEach((e, i) => e.i = i);
+      const [h, a] = rescore(events);
+      f.aiCalls = store.calls;
+      putMatch(id, { events, ctx, fallback, light, lightStats });
+      f.final = [h, a];
+      f.hg = 0;
+      f.ag = 0;
+      f.pos = 0;
+      f.fallback = !!fallback;
+      if (light) {
+        // без трансляции: сразу итог, счёт и статистика
+        f.pos = events.length;
+        if (note) f.note = note;
+        save();
+        finish(id);
+        return;
+      }
+      // Запрос к ИИ сделан заранее (за минуту до матча), эфир стартует ровно в назначенное время
+      const startAt = opts.manual ? Date.now() : Math.max(Date.now(), realAt(f).getTime());
+      if (startAt - Date.now() > 1000) {
+        f.hold = startAt; // статус остаётся «готовится» до начала
+        save();
+        timers[id] = setTimeout(() => beginLive(id), startAt - Date.now());
+      } else {
+        beginLive(id);
+      }
+    } catch (e: any) {
+      console.error('матч не удался:', e);
+      f.aiCalls = store.calls;
+      f.status = 'scheduled';
+      f.err = e.message;
+      if (!opts.manual) f.noAuto = true; // чтобы планировщик не жёг лимиты повторами — решает админ
+      save();
     }
-    events.forEach((e, i) => e.i = i);
-    const [h, a] = rescore(events);
-    putMatch(id, { events, ctx, fallback });
-    f.final = [h, a];
-    f.hg = 0;
-    f.ag = 0;
-    f.pos = 0;
-    f.status = 'live';
-    f.fallback = !!fallback;
-    save();
-    startLive(id);
-  } catch (e: any) {
-    console.error('матч не удался:', e);
-    f.status = 'scheduled';
-    f.err = e.message;
-    save();
-  }
+  });
+}
+function beginLive(id: string) {
+  const f = fx(id);
+  if (!f || f.status !== 'generating' || !getMatch(id)) return;
+  f.hold = null;
+  f.status = 'live';
+  save();
+  startLive(id);
 }
 function startLive(id: string) {
   const f = fx(id), m = getMatch(id);
@@ -2766,6 +2999,7 @@ function finish(id: string) {
   const f = fx(id), m = getMatch(id);
   f.hg = f.final[0]; f.ag = f.final[1];
   f.st = computeStats(m.events, m.ctx);
+  if (m.light) applyLightStats(f.st, m.lightStats, m.ctx);
   m.stats = f.st;
   const HName = tn(f.home), AName = tn(f.away);
   const cH = getCoachForTeam(f.home), cA = getCoachForTeam(f.away);
@@ -2788,18 +3022,50 @@ function finish(id: string) {
     }
     for (const p of squadOf(f[s])) {
       if (p.banLeft > 0 && !(f.st.players[p.id])) p.banLeft--;
+      if (p.banLeft <= 0 && !(p.banUntil && p.banUntil >= f.date)) { p.banReason = ''; p.banLabel = ''; }
+    }
+    // отбытие дисквалификации главным тренером/штабом: сезонный матч пропущен
+    for (const d of Object.values<any>(db.staffDiscipline || {})) {
+      if (d.tid === f[s] && d.banLeft > 0) d.banLeft--;
     }
   }
   for (const e of m.events) {
+    // карточка главному тренеру / тренерскому штабу
+    if (e.person && (e.type === 'yellow' || e.type === 'red')) {
+      if (isFriendlyMatch) continue;
+      const tid = f[e.team];
+      if (!tid) continue;
+      const d = getDisc(tid, e.person);
+      if (e.type === 'yellow') {
+        d.yc = (d.yc || 0) + 1;
+        if (d.yc % 4 === 0) { d.banLeft = Math.max(d.banLeft || 0, 1); d.reason = 'перебор жёлтых карточек'; }
+      } else {
+        d.banLeft = Math.max(d.banLeft || 0, e.ban_matches || 1);
+        d.reason = String(e.text || 'удаление').slice(0, 100);
+      }
+      continue;
+    }
     const p = player(e.pids?.[0]);
     if (!p) continue;
-    if (e.type === 'injury' && (e.out_days === undefined || e.out_days > 0)) p.out = { until: addDays(f.date, e.out_days || 14), reason: e.text.slice(0, 120) };
+    if (e.type === 'injury' && (e.out_days === undefined || e.out_days > 0)) {
+      const days = e.out_days || 14;
+      p.out = { until: addDays(f.date, days), days, label: daysLabel(days), reason: e.text.slice(0, 120) };
+    }
     // травма (строка выше) сохраняется и в товарищеском матче; карточки в официальные матчи не переходят
     if (isFriendlyMatch) continue;
-    if (e.type === 'red') p.banLeft = 1;
+    if (e.type === 'red') {
+      // срок красной не всегда 1 матч: серьёзное нарушение — больше матчей, возможен бан по времени на все турниры
+      p.banLeft = Math.max(p.banLeft || 0, e.ban_matches || 1);
+      p.banReason = 'прямая красная карточка';
+      if (e.ban_days) { p.banUntil = addDays(f.date, e.ban_days); p.banLabel = daysLabel(e.ban_days); }
+    }
     if (e.type === 'yellow') {
       p.seasonYC = (p.seasonYC || 0) + 1;
-      if (p.seasonYC % 4 === 0) p.banLeft = Math.max(p.banLeft || 0, 1);
+      if (p.seasonYC % 4 === 0) {
+        // 4 жёлтых = пропуск 1 матча, затем отсчёт карточек начинается заново (seasonYC % 4)
+        p.banLeft = Math.max(p.banLeft || 0, 1);
+        if (!p.banReason) p.banReason = 'перебор жёлтых карточек';
+      }
     }
   }
   invalidateAgg();
@@ -2844,7 +3110,11 @@ function checkPlayoffShootout(f: any) {
 function resumeLive() {
   for (const f of db.fixtures) {
     if (f.status === 'live' && getMatch(f.id)) startLive(f.id);
-    else if (['live', 'generating', 'queued'].includes(f.status)) { f.status = 'scheduled'; }
+    else if (f.status === 'generating' && f.hold && getMatch(f.id)?.events?.length) {
+      const fid = f.id;
+      timers[fid] = setTimeout(() => beginLive(fid), Math.max(0, f.hold - Date.now()));
+    }
+    else if (['live', 'generating', 'queued'].includes(f.status)) { f.status = 'scheduled'; f.hold = null; }
   }
   save();
 }
@@ -2939,7 +3209,9 @@ const TGI: Record<string, string> = {
   foul: '⚠️',
   offside: '🚫',
   shot: '⚡',
-  danger: '🔥'
+  danger: '🔥',
+  commentator_intro: '🎙', tactical_note: '📋', stat_display: '📊', crowd: '📣', lineup: '📃', walkout: '🚶', anthem: '🎶',
+  coin_toss: '🪙', photo: '📸', warmup: '🏃', kickoff_buildup: '⏳', kit_issue: '👕', verbal_warning: '☝️', cooling_break: '💧'
 };
 
 function tgEvent(f: any, e: any) {
@@ -2948,7 +3220,8 @@ function tgEvent(f: any, e: any) {
   const hName = esc(tn(f.home));
   const aName = esc(tn(f.away));
   const score = e.score ? `${e.score[0]}:${e.score[1]}` : `${f.hg ?? 0}:${f.ag ?? 0}`;
-  const minute = e.min !== undefined && e.min !== null ? `${e.min}'` : '';
+  const pre = typeof e.min === 'number' && e.min < 0;
+  const minute = pre ? 'до матча' : (e.min !== undefined && e.min !== null ? `${e.min}'` : '');
   const text = esc(e.text || '');
 
   let title = '';
@@ -3220,6 +3493,7 @@ function genSeason(start: string, name: string, opts?: { realStart?: string }) {
   // Формируем Winline Кубок Лиги (2026): 20 команд Медиалиги, 4 группы по 5 команд
   const allMediaTeams = db.teams.filter((t: any) => t.comp === 'media' || t.comp === 'media_div2');
   const shuffledMedia = shuffle(allMediaTeams.map((t: any) => t.id), r);
+  if (allMediaTeams.length !== 20) console.warn(`[Кубок Лиги] нужно 20 команд (12 Медиалига + 8 Второй дивизион), сейчас ${allMediaTeams.length} — группы получатся неполными`);
   const mflCupGroups = ['A', 'B', 'C', 'D'];
   mflCupGroups.forEach((gid, gi) => {
     const gTeams = shuffledMedia.slice(gi * 5, (gi + 1) * 5);
@@ -3270,6 +3544,7 @@ function genSeason(start: string, name: string, opts?: { realStart?: string }) {
   db.fixtures.push(...cupFixtures);
 
   db.players.forEach((p: any) => { p.seasonYC = 0; p.banLeft = 0; });
+  db.staffDiscipline = {};
   ensureDualTimes(season, true);
   invalidateAgg();
   save();
@@ -4267,7 +4542,7 @@ app.use((req: any, res: Response, next: NextFunction) => {
         session = fromCode;
         if (token) {
           db.sessions[token] = { ...session, at: Date.now() };
-          fbSaveSession(token, db.sessions[token]);
+          pgSaveSession(token, db.sessions[token]);
         }
       }
     }
@@ -4286,7 +4561,7 @@ app.use((req: any, res: Response, next: NextFunction) => {
   }
 
   req.me = session;
-  next();
+  aiCtx.run({ ai: session?.role === 'admin', calls: 0 }, () => next());
 });
 
 const admin = (req: any, res: Response, next: NextFunction) => req.me?.role === 'admin' ? next() : res.status(403).json({ error: 'Нужен вход администратора' });
@@ -4366,6 +4641,7 @@ const pubPlayer = (p: any) => ({
   name: p.name,
   pos: p.pos,
   born: p.born,
+  num: p.num ?? null,
   age: ageOfPlayer(p),
   birthdayToday: isBirthdayToday(p),
   nation: p.nation || 'Россия',
@@ -4385,7 +4661,11 @@ const pubPlayer = (p: any) => ({
   realClub: p.realClub || '',
   verified: !!p.verified,
   out: p.out,
-  banLeft: p.banLeft
+  banLeft: p.banLeft,
+  banUntil: p.banUntil || null,
+  banText: banText(p),
+  outText: outText(p),
+  yellowCycle: (p.seasonYC || 0) % 4
 });
 
 const pubFx = (f: any) => {
@@ -4482,7 +4762,7 @@ app.post('/api/login', (req, res) => {
   if (!s) return fail(res, 'Код не найден', 401);
   const token = crypto.randomBytes(20).toString('hex');
   db.sessions[token] = { ...s, at: Date.now() };
-  fbSaveSession(token, db.sessions[token]);
+  pgSaveSession(token, db.sessions[token]);
   save();
   res.json({ token, ...s, team: s.teamId ? pubTeam(team(s.teamId)) : null, code: s.code || raw });
 });
@@ -4491,7 +4771,7 @@ app.post('/api/logout', (req, res) => {
   const token = (req.headers['x-token'] as string) || req.body?.token;
   if (token && db.sessions[token]) {
     delete db.sessions[token];
-    fbDeleteSession(token);
+    pgDeleteSession(token);
     save();
   }
   res.json({ ok: 1 });
@@ -5146,7 +5426,7 @@ app.post('/api/admin/playoffs/run-all', admin, (req, res) => {
     }
     // Remove from live queue if any were queued
     for (const f of scheduled) {
-      const idx = queue.indexOf(f.id);
+      const idx = queue.findIndex(j => j.id === f.id);
       if (idx >= 0) queue.splice(idx, 1);
     }
     // Sort so Leg 1 is simulated before Leg 2
@@ -5239,6 +5519,7 @@ app.post('/api/admin/schedule/delete', admin, (req, res) => {
   db.settings.scheduleCleared = true;
   const deletedCount = beforeCount - (db.fixtures || []).length;
   mcache.clear();
+  pgDeleteAllMatches();
   try {
     const files = fs.readdirSync(MDIR);
     for (const file of files) {
@@ -5358,8 +5639,9 @@ app.get('/api/club', needClub, (req: any, res) => {
     legionSquadCount,
     squadSubmitted: !!db.squads[req.tid],
     staffSlots: staffSlots(req.tid),
+    staffOffers: staffOffersFor(req.tid),
     family: sisterIdsOf(req.tid).map((id: string) => ({ id, name: tn(id), logo: teamLogo(id), comp: team(id)?.comp })),
-    squad: sq.map((p: any) => ({ ...pubPlayer(p), available: isAvail(p, today), card: p })),
+    squad: sq.map((p: any) => ({ ...pubPlayer(p), available: isAvail(p, today), unavailText: unavailText(p, today), card: p })),
     tactic: db.tactics[req.tid] || null,
     upcoming: up.map((f: any) => ({
       ...pubFx(f),
@@ -5897,7 +6179,8 @@ app.post('/api/admin/settings', admin, (req, res) => {
   for (const k of ['season', 'siteUrl']) if (typeof b[k] === 'string') s[k] = b[k].trim();
   if (typeof b.tgChat === 'string') s.tgChat = normalizeTgChat(b.tgChat);
   if (typeof b.tgToken === 'string' && !b.tgToken.includes('•')) s.tgToken = b.tgToken.trim();
-  for (const k of ['secPerMin', 'breakSec', 'squadMax']) if (b[k] !== undefined && +b[k] > 0) s[k] = +b[k];
+  for (const k of ['secPerMin', 'breakSec', 'squadMax', 'maxAiCalls', 'aiParallel']) if (b[k] !== undefined && +b[k] > 0) s[k] = +b[k];
+  if (b.aiLeadSec !== undefined && +b.aiLeadSec >= 0) s.aiLeadSec = Math.min(900, +b.aiLeadSec);
   if (b.chunks !== undefined) s.chunks = +b.chunks === 6 ? 6 : 2;
   if (b.auto !== undefined) s.auto = !!b.auto;
   if (b.techDefeat !== undefined) s.techDefeat = !!b.techDefeat;
@@ -6039,6 +6322,22 @@ app.post('/api/admin/import', admin, async (req, res) => {
   }
 });
 
+/* Импорт составов и тренерских штабов из текстового файла. apply=false — только проверка (база не меняется). */
+app.post('/api/admin/squads/import', admin, (req, res) => {
+  const text = String(req.body.text || '');
+  if (!text.trim()) return fail(res, 'Вставьте или загрузите файл с составами');
+  const parsed = parseSquads(text);
+  if (!parsed.clubs.length) return fail(res, 'В файле не найдено ни одного клуба. Ожидается: «Клуб:», затем строки «номер, ФИО, позиция, возраст (дата рождения), гражданство»');
+  const apply = !!req.body.apply;
+  const rep = runImport(db, parsed, {
+    dry: !apply, replace: !!req.body.replace, staff: req.body.staff !== false,
+    overrides: (req.body.map && typeof req.body.map === 'object') ? req.body.map : {},
+    uid, roleTitle: (r: string) => (STAFF_ROLES as any)?.[r]?.title || r,
+  });
+  if (apply) { syncPlayerAges(); invalidateAgg(); save(); }
+  res.json(rep);
+});
+
 app.get('/api/admin/players', admin, (req, res) => {
   const q = norm(req.query.q || '');
   let l = db.players;
@@ -6071,38 +6370,6 @@ app.post('/api/admin/players/clear-all', admin, (req, res) => {
   db.foreignOffers = [];
   save();
   res.json({ ok: 1, cleared: count, message: `Все игроки (${count}) успешно удалены из базы данных.` });
-});
-
-app.post('/api/admin/players/generate-all', admin, (req, res) => {
-  let count = 0;
-  const existingPlayerIds = new Set((db.players || []).map((p: any) => p.id));
-  for (const t of (db.teams || [])) {
-    const fullSquad = generateFullSquad(t);
-    const newIds: string[] = [];
-    for (const p of fullSquad) {
-      db.players.push(p);
-      existingPlayerIds.add(p.id);
-      newIds.push(p.id);
-      count++;
-    }
-    db.squads[t.id] = newIds;
-  }
-  save();
-  res.json({ ok: 1, generated: count, message: `Сгенерированы полные составы для всех команд (${count} игроков).` });
-});
-
-app.post('/api/admin/players/generate-club/:teamId', admin, (req, res) => {
-  const t = team(req.params.teamId);
-  if (!t) return fail(res, 'Клуб не найден');
-  const fullSquad = generateFullSquad(t);
-  const ids: string[] = [];
-  for (const p of fullSquad) {
-    db.players.push(p);
-    ids.push(p.id);
-  }
-  db.squads[t.id] = ids;
-  save();
-  res.json({ ok: 1, count: ids.length, message: `Состав клуба «${t.name}» сгенерирован (${ids.length} игроков).` });
 });
 
 app.post('/api/admin/foreign-offers/generate', admin, async (req: any, res) => {
@@ -6187,6 +6454,9 @@ app.post('/api/admin/player', admin, (req, res) => {
   }
   if ('out' in b) p.out = b.out && b.out.until ? b.out : null;
   if (b.banLeft !== undefined) p.banLeft = +b.banLeft || 0;
+  if (b.banUntil !== undefined) p.banUntil = b.banUntil || null;
+  if (b.banLabel !== undefined) p.banLabel = String(b.banLabel || '');
+  if (b.banReason !== undefined) p.banReason = String(b.banReason || '');
   p.updatedAt = new Date().toISOString();
   save();
   res.json({ ok: 1, player: p });
@@ -6311,6 +6581,57 @@ app.post('/api/admin/players/portraits-stop', admin, (req, res) => {
   res.json({ ok: 1 });
 });
 
+/* Очередь ИИ: что и когда будет симулироваться */
+app.get('/api/admin/ai-queue', admin, (req, res) => {
+  const now = Date.now(), lead = (db.settings.aiLeadSec !== undefined ? +db.settings.aiLeadSec : 60) * 1000, horizon = now + 14 * 86400_000;
+  const items: any[] = [];
+  for (const f of seasonFx()) {
+    const auto = isAutoFx(f), t = realAt(f).getTime();
+    const busy = ['queued', 'generating', 'live'].includes(f.status);
+    if (!busy && !(auto && f.status === 'scheduled' && t <= horizon)) continue;
+    let state = 'wait';
+    if (f.status === 'queued') state = 'queued';
+    else if (f.status === 'generating') state = f.hold ? 'hold' : 'gen';
+    else if (f.status === 'live') state = 'live';
+    else if (f.err) state = 'error';
+    else if (f.noAuto) state = 'excluded';
+    else if (now - t > AI_MAX_LATE_MS) state = 'overdue';
+    items.push({
+      id: f.id, home: tn(f.home), away: tn(f.away), comp: compName(f), round: roundLabel(f),
+      startAt: t, triggerAt: t - lead, auto, light: isLightFx(f),
+      requests: isLightFx(f) ? 1 : (db.settings.chunks == 6 ? 6 : 2),
+      aiCalls: f.aiCalls || 0, err: f.err || '', noAuto: !!f.noAuto, state
+    });
+  }
+  items.sort((x, y) => x.startAt - y.startAt);
+  const log = db.llmlog.filter((l: any) => now - l.ts < 3600_000);
+  res.json({
+    auto: !!db.settings.auto,
+    leadSec: lead / 1000, maxAiCalls: +db.settings.maxAiCalls || 6, parallel: +db.settings.aiParallel || 2,
+    running, queued: queue.length,
+    keys: provList().length, keysCooling: provList().filter((p: any) => (keyCooldown.get(p.key) || 0) > now).length,
+    lastHour: { ok: log.filter((l: any) => l.ok).length, fail: log.filter((l: any) => !l.ok).length },
+    items: items.slice(0, 80)
+  });
+});
+app.post('/api/admin/ai-queue/toggle', admin, (req, res) => {
+  const f = fx(req.body.id);
+  if (!f) return fail(res, 'Матч не найден');
+  f.noAuto = !!req.body.noAuto;
+  if (!f.noAuto) f.err = '';
+  save();
+  res.json({ ok: 1 });
+});
+app.post('/api/admin/ai-queue/dequeue', admin, (req, res) => {
+  const f = fx(req.body.id);
+  const i = queue.findIndex(j => j.id === req.body.id);
+  if (!f || i < 0) return fail(res, 'Матча нет в очереди');
+  queue.splice(i, 1);
+  f.status = 'scheduled'; f.noAuto = true;
+  save();
+  res.json({ ok: 1 });
+});
+
 app.post('/api/admin/run', admin, async (req, res) => {
   const b = req.body;
   let list = seasonFx().filter((f: any) => f.status === 'scheduled');
@@ -6327,9 +6648,10 @@ app.post('/api/admin/fixture', admin, (req, res) => {
   const f = fx(req.body.id);
   if (!f) return fail(res, 'Матч не найден');
   if (req.body.reset) {
-    if (f.status === 'live') { clearTimeout(timers[f.id]); }
-    Object.assign(f, { status: 'scheduled', hg: null, ag: null, pen: null, st: null, pos: 0, final: null, err: '' });
+    if (f.status === 'live' || f.hold) { clearTimeout(timers[f.id]); }
+    Object.assign(f, { status: 'scheduled', hg: null, ag: null, pen: null, st: null, pos: 0, final: null, err: '', hold: null, aiCalls: 0 });
     try { fs.unlinkSync(path.join(MDIR, f.id + '.json')); } catch { }
+    pgDeleteMatch(f.id);
     mcache.delete(f.id);
     invalidateAgg();
     save();
@@ -6672,28 +6994,44 @@ app.post('/api/admin/budget/award-prizes', admin, (req, res) => {
 });
 
 /* ───────── старт и инициализация ───────── */
-// Firebase: коды входа и сессии (если ключ задан); иначе — файл club_codes.json
+// PostgreSQL — единственное хранилище. Если DATABASE_URL не задан — работаем по-старому (файлы), но с предупреждением.
 {
-  let seed: { admin?: string; clubs: Record<string, string> } = { clubs: {} };
-  try {
-    const j = JSON.parse(fs.readFileSync(CODES_FILE, 'utf8'));
-    seed = { admin: j.admin, clubs: (j.clubs && typeof j.clubs === 'object') ? j.clubs : {} };
-  } catch {}
-  const snap = process.env.NODE_ENV === 'test' ? null : await fbInit(seed);
-  if (snap) fbCodes = { admin: snap.admin, clubs: snap.clubs };
-  // Если в облаке лежит более свежая база, чем локальный db.json (контейнер пересоздан) — берём облачную
-  if (snap) {
-    const remote = await fbLoadState();
-    let localAt = 0;
-    try { localAt = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'))._savedAt || 0; } catch {}
-    if (remote && remote.savedAt > localAt) {
-      fs.writeFileSync(DB_FILE, remote.json);
-      console.log('База взята из Firestore (она новее локальной).');
+  const isTest = process.env.NODE_ENV === 'test';
+  const usePg = !isTest && pgConfigured();
+  let pgSessions: Record<string, any> = {};
+  if (usePg) {
+    try { await pgInit(); }
+    catch (e: any) { console.error('PostgreSQL: не удалось подключиться:', e.message); process.exit(1); }
+    // Первый запуск на пустой базе: автоматически переносим всё из Firestore / data/db.json / data/matches / club_codes.json
+    if (!(await pgHasData())) {
+      console.log('PostgreSQL: база пуста — переношу данные из Firestore и локальных файлов…');
+      const legacy = await collectLegacy({ dataDir: DATA_DIR, codesFile: CODES_FILE });
+      if (legacy) {
+        const r = await pgImportAll(legacy);
+        console.log(`PostgreSQL: перенос завершён (${legacy.source}). Матчей: ${r.matches}, кодов клубов: ${r.codes}, сессий: ${r.sessions}.`);
+      } else {
+        console.log('PostgreSQL: старых данных не найдено — начинаю с чистой базы.');
+      }
     }
-    await fbRestoreMatches(MDIR);
+    if (await pgHasData()) {
+      PG_STATE = await pgLoadState();
+      for (const [id, m] of await pgLoadMatches()) mcache.set(id, m);
+      pgSessions = await pgLoadSessions();
+    }
+    pgCodes = await pgLoadCodes();
+    if (!pgCodes.admin && !Object.keys(pgCodes.clubs).length) {
+      // в PostgreSQL кодов ещё нет — берём из club_codes.json, чтобы коды клубов не менялись
+      try {
+        const j = JSON.parse(fs.readFileSync(CODES_FILE, 'utf8'));
+        pgCodes = { admin: j.admin, clubs: (j.clubs && typeof j.clubs === 'object') ? j.clubs : {} };
+      } catch {}
+    }
+    console.log(`PostgreSQL: подключено (матчей в памяти: ${mcache.size}, клубов с кодами: ${Object.keys(pgCodes.clubs).length}, сессий: ${Object.keys(pgSessions).length})`);
+  } else if (!isTest) {
+    console.warn('⚠ DATABASE_URL не задан — база хранится в файлах data/db.json и может пропасть при пересоздании контейнера. Задайте строку подключения к PostgreSQL.');
   }
   load();
-  if (snap) db.sessions = snap.sessions;
+  if (usePg) { db.sessions = pgSessions; pgSyncCodes(codeReg); }
 }
 /* ───────── судьи (только админ) ───────── */
 app.get('/api/admin/referees', admin, (req, res) => {
@@ -7009,14 +7347,30 @@ app.get('/api/admin/coaches', admin, (req, res) => {
 
 /* ───────── тренерский штаб: клуб подаёт краткую информацию, админ делает портрет через ИИ ───────── */
 const cleanStr = (v: any, n: number) => String(v ?? '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, n);
+/* ── должности: стандартные (STAFF_ROLES) + свои, которые клуб создаёт сам ── */
+const MAX_CUSTOM_ROLES = 12;
+function customRolesOf(tid: string): any[] {
+  return (db.staffRoles || []).filter((r: any) => r.teamId === tid);
+}
+/** описание должности для клуба: стандартная или собственная */
+function roleMetaFor(tid: string, role: string): any | null {
+  if ((STAFF_ROLES as any)[role]) return (STAFF_ROLES as any)[role];
+  const c = customRolesOf(tid).find((r: any) => r.id === role);
+  return c ? { title: c.title, short: c.title, desc: c.desc || '', icon: c.icon || '🧩', custom: true } : null;
+}
+const roleValidFor = (tid: string, role: string) => STAFF_ROLE_LIST.includes(role) || customRolesOf(tid).some((r: any) => r.id === role);
+const isRoleRequired = (role: string) => REQUIRED_STAFF_ROLES.includes(role);
+
 function staffSlots(tid: string) {
   const staff = getStaffForTeam(tid);
-  return STAFF_ROLE_LIST.map(role => {
-    const meta: any = (STAFF_ROLES as any)[role] || {};
+  const rolesList = [...STAFF_ROLE_LIST, ...customRolesOf(tid).map((r: any) => r.id)];
+  return rolesList.map(role => {
+    const meta: any = roleMetaFor(tid, role) || {};
     const m = staff.find((x: any) => x.role === role) || null;
     return {
       role, title: meta.title || role, icon: meta.icon || '', desc: meta.desc || '',
-      required: REQUIRED_STAFF_ROLES.includes(role),
+      required: isRoleRequired(role),
+      custom: !!meta.custom,
       member: m ? { id: m.id, name: m.name, age: m.age, nationality: m.nationality, brief: m.brief || '', pending: !!m.pending } : null
     };
   });
@@ -7024,14 +7378,14 @@ function staffSlots(tid: string) {
 // клуб назначает/заменяет специалиста: краткая информация → портрет сделает админ
 app.post('/api/club/staff/set', needClub, (req: any, res) => {
   const role = String(req.body.role || '');
-  if (!STAFF_ROLE_LIST.includes(role)) return fail(res, 'Неизвестная должность');
+  if (!roleValidFor(req.tid, role)) return fail(res, 'Неизвестная должность');
   const name = cleanStr(req.body.name, 80);
   if (name.length < 3) return fail(res, 'Укажите ФИО специалиста');
   const brief = cleanStr(req.body.brief, 600);
   const ageN = Number(req.body.age);
   const nat = cleanNation(req.body.nationality);
   const tm = team(req.tid);
-  const meta: any = (STAFF_ROLES as any)[role];
+  const meta: any = roleMetaFor(req.tid, role);
   if (!Array.isArray(db.staff)) db.staff = [];
   const prev = db.staff.find((x: any) => x.teamId === req.tid && x.role === role);
   db.staff = db.staff.filter((x: any) => !(x.teamId === req.tid && x.role === role));
@@ -7047,17 +7401,256 @@ app.post('/api/club/staff/set', needClub, (req: any, res) => {
     updatedAt: new Date().toISOString()
   };
   db.staff.push(member);
+  // заменённый специалист больше не в клубе — его заявки на покупку закрываем
+  if (prev) cancelStaffOffersFor(prev.id, 'Специалист больше не работает в клубе');
   save();
   try { tg(`🧑‍🏫 <b>${esc(tm?.name)}</b>: ${prev ? 'замена' : 'назначение'} — ${esc(meta.title)}: <b>${esc(name)}</b>${prev ? ` (вместо ${esc(prev.name)})` : ''}. Ожидает портрета ИИ.`); } catch { }
   res.json({ ok: 1, member, staffSlots: staffSlots(req.tid) });
 });
 app.post('/api/club/staff/remove', needClub, (req: any, res) => {
   const role = String(req.body.role || '');
-  if (!STAFF_ROLE_LIST.includes(role)) return fail(res, 'Неизвестная должность');
-  if (REQUIRED_STAFF_ROLES.includes(role)) return fail(res, 'Обязательную должность нельзя оставить пустой — назначьте замену');
+  if (!roleValidFor(req.tid, role)) return fail(res, 'Неизвестная должность');
+  if (isRoleRequired(role)) return fail(res, 'Обязательную должность нельзя оставить пустой — назначьте замену');
+  const gone = (db.staff || []).filter((x: any) => x.teamId === req.tid && x.role === role);
   db.staff = (db.staff || []).filter((x: any) => !(x.teamId === req.tid && x.role === role));
+  gone.forEach((g: any) => cancelStaffOffersFor(g.id, 'Специалист больше не работает в клубе'));
   save();
   res.json({ ok: 1, staffSlots: staffSlots(req.tid) });
+});
+
+/* ── своя должность клуба (например «Скаут», «Психолог», «Тренер по видеоаналитике») ── */
+app.post('/api/club/staff/role/create', needClub, (req: any, res) => {
+  const title = cleanStr(req.body.title, 50);
+  if (title.length < 3) return fail(res, 'Название должности — от 3 знаков');
+  const desc = cleanStr(req.body.desc, 200);
+  const icon = String(req.body.icon || '').trim().slice(0, 4) || '🧩';
+  const mine = customRolesOf(req.tid);
+  if (mine.length >= MAX_CUSTOM_ROLES) return fail(res, `Можно создать не больше ${MAX_CUSTOM_ROLES} своих должностей`);
+  const low = title.toLowerCase();
+  const dup = [...Object.values(STAFF_ROLES as any).map((r: any) => String(r.title).toLowerCase()), ...mine.map((r: any) => r.title.toLowerCase())];
+  if (dup.includes(low)) return fail(res, 'Такая должность в клубе уже есть');
+  const role = { id: 'c_' + uid(), teamId: req.tid, title, desc, icon, createdAt: new Date().toISOString() };
+  db.staffRoles.push(role);
+  save();
+  res.json({ ok: 1, role, staffSlots: staffSlots(req.tid) });
+});
+app.post('/api/club/staff/role/delete', needClub, (req: any, res) => {
+  const role = String(req.body.role || '');
+  const r = customRolesOf(req.tid).find((x: any) => x.id === role);
+  if (!r) return fail(res, 'Своя должность не найдена (стандартные удалить нельзя)');
+  const gone = (db.staff || []).filter((x: any) => x.teamId === req.tid && x.role === role);
+  db.staff = (db.staff || []).filter((x: any) => !(x.teamId === req.tid && x.role === role));
+  gone.forEach((g: any) => cancelStaffOffersFor(g.id, 'Должность в клубе упразднена'));
+  db.staffRoles = db.staffRoles.filter((x: any) => x.id !== role);
+  save();
+  res.json({ ok: 1, staffSlots: staffSlots(req.tid) });
+});
+
+/* ───────── покупка тренера и специалистов штаба у других клубов ─────────
+   Заявка → согласие клуба-продавца (если у клуба есть владелец) → одобрение админа → переход со сделкой по бюджету. */
+const offerFeeEuros = (o: any) => Math.round((Number(o.feeAmount) || 0) * 1_000_000);
+
+function cancelStaffOffersFor(staffId: string, reason: string) {
+  for (const o of (db.staffOffers || [])) {
+    if (o.staffId === staffId && o.status === 'pending') { o.status = 'rejected'; o.rejectReason = reason; }
+  }
+}
+function staffOfferView(o: any) {
+  const m = (db.staff || []).find((x: any) => x.id === o.staffId);
+  const sellerHas = (db.staff || []).filter((x: any) => x.teamId === o.from && x.role === o.role).length;
+  return {
+    ...o,
+    fromName: tn(o.from) || o.fromName, toName: tn(o.to) || o.toName,
+    fromLogo: teamLogo(o.from), toLogo: teamLogo(o.to),
+    // после продажи у продавца может опустеть обязательная должность — без неё матч не допускается
+    leavesVacancy: o.status === 'pending' && !!m && m.teamId === o.from && isRoleRequired(o.role) && sellerHas <= 1,
+    replaces: o.status === 'pending' ? (db.staff || []).filter((x: any) => x.teamId === o.to && x.role === o.targetRole).map((x: any) => x.name) : (o.replacedNames || [])
+  };
+}
+function staffOffersFor(tid: string) {
+  const all = db.staffOffers || [];
+  return {
+    incoming: all.filter((o: any) => o.from === tid && o.status === 'pending').map(staffOfferView),
+    outgoing: all.filter((o: any) => o.to === tid && o.status === 'pending').map(staffOfferView),
+    history: all.filter((o: any) => (o.from === tid || o.to === tid) && o.status !== 'pending').slice(0, 15).map(staffOfferView)
+  };
+}
+
+// каталог специалистов других клубов, доступных для заявки
+app.get('/api/club/staff/market', needClub, (req: any, res) => {
+  const role = String(req.query.role || '');
+  const q = String(req.query.q || '').trim().toLowerCase();
+  const club = String(req.query.club || '');
+  const mineOffers = new Set((db.staffOffers || []).filter((o: any) => o.to === req.tid && o.status === 'pending').map((o: any) => o.staffId));
+  let list = (db.staff || []).filter((m: any) => m.teamId && m.teamId !== req.tid && team(m.teamId));
+  if (role) list = list.filter((m: any) => m.role === role);
+  if (club) list = list.filter((m: any) => m.teamId === club);
+  if (q) list = list.filter((m: any) => (m.name || '').toLowerCase().includes(q) || tn(m.teamId).toLowerCase().includes(q));
+  const total = list.length;
+  list = list.sort((a: any, b: any) => ((b.reputation || 0) - (a.reputation || 0)) || String(a.name).localeCompare(String(b.name), 'ru')).slice(0, 120);
+  res.json({
+    total,
+    roles: STAFF_ROLE_LIST.map(r => ({ role: r, title: (STAFF_ROLES as any)[r]?.title || r })),
+    myRoles: staffSlots(req.tid).map((s: any) => ({ role: s.role, title: s.title, custom: s.custom })),
+    budget: team(req.tid)?.budget || 0,
+    members: list.map((m: any) => ({
+      id: m.id, name: m.name, role: m.role, roleTitle: m.roleTitle || roleMetaFor(m.teamId, m.role)?.title || m.role,
+      custom: String(m.role).startsWith('c_'),
+      age: m.age, nationality: m.nationality, specialty: m.specialty || '', reputation: m.reputation, styleTitle: m.styleTitle || '',
+      teamId: m.teamId, teamName: tn(m.teamId), teamLogo: teamLogo(m.teamId),
+      offered: mineOffers.has(m.id)
+    }))
+  });
+});
+
+app.get('/api/club/staff/offers', needClub, (req: any, res) => res.json(staffOffersFor(req.tid)));
+
+// клуб подаёт заявку на покупку специалиста
+app.post('/api/club/staff/offer', needClub, (req: any, res) => {
+  const m = (db.staff || []).find((x: any) => x.id === String(req.body.staffId || ''));
+  if (!m || !m.teamId) return fail(res, 'Специалист не найден');
+  if (m.teamId === req.tid) return fail(res, 'Это специалист вашего клуба');
+  const buyer = team(req.tid), seller = team(m.teamId);
+  if (!buyer || !seller) return fail(res, 'Клуб не найден');
+  if ((db.staffOffers || []).some((o: any) => o.status === 'pending' && o.staffId === m.id && o.to === req.tid)) {
+    return fail(res, 'Вы уже подали заявку на этого специалиста — дождитесь решения');
+  }
+  const feeStr = String(req.body.fee || '€1.0M').trim().slice(0, 30);
+  const feeAmount = parseFeeAmount(feeStr);
+  if (!(feeAmount >= 0)) return fail(res, 'Не удалось разобрать сумму компенсации (пример: €1.5M)');
+  if (offerFeeEuros({ feeAmount }) > (buyer.budget || 0)) return fail(res, 'Недостаточно средств в бюджете клуба для такой компенсации');
+
+  // на какую должность в вашем клубе: по умолчанию та же; для чужой «своей» должности создадим такую же у вас
+  let targetRole = String(req.body.targetRole || '').trim();
+  const sellerCustom = String(m.role).startsWith('c_');
+  if (!targetRole) targetRole = sellerCustom ? 'copy' : m.role;
+  if (targetRole !== 'copy' && !roleValidFor(req.tid, targetRole)) return fail(res, 'Такой должности в вашем клубе нет — создайте её на вкладке «Штаб»');
+  // как в трансферах игроков: между клубами РПЛ нужно согласие продавца, в остальных случаях решает админ
+  const needClub = seller.comp === 'rpl' && buyer.comp === 'rpl';
+  const o: any = {
+    id: 'sof_' + uid(),
+    staffId: m.id, staffName: m.name, role: m.role,
+    roleTitle: m.roleTitle || roleMetaFor(m.teamId, m.role)?.title || m.role,
+    targetRole, from: m.teamId, fromName: seller.name, to: req.tid, toName: buyer.name,
+    fee: feeStr, feeAmount, note: cleanStr(req.body.note, 300),
+    status: 'pending', needClub,
+    clubApproval: needClub ? 'pending' : 'not_required', adminApproval: 'pending',
+    initiator: req.tid, date: new Date().toISOString().slice(0, 10), at: Date.now()
+  };
+  db.staffOffers.unshift(o);
+  save();
+  try { tg(`🧑‍🏫 Заявка на специалиста: <b>${esc(buyer.name)}</b> хочет <b>${esc(m.name)}</b> (${esc(o.roleTitle)}) из «${esc(seller.name)}» за ${esc(feeStr)}.`); } catch { }
+  res.json({ ok: 1, offer: staffOfferView(o), message: needClub
+    ? `Заявка на ${m.name} отправлена клубу «${seller.name}» и администратору лиги.`
+    : `Заявка на ${m.name} отправлена администратору лиги.` });
+});
+
+/** исполнить сделку, если получены нужные согласия */
+function executeStaffOfferIfApproved(o: any): { executed: boolean; error?: string } {
+  if (o.status === 'approved') return { executed: true };
+  if (o.status !== 'pending') return { executed: false };
+  const clubOk = !o.needClub || o.clubApproval === 'approved';
+  if (!(clubOk && o.adminApproval === 'approved')) return { executed: false };
+
+  const reject = (why: string) => { o.status = 'rejected'; o.rejectReason = why; return { executed: false, error: why }; };
+  const m = (db.staff || []).find((x: any) => x.id === o.staffId);
+  if (!m || m.teamId !== o.from) return reject('Специалист уже не работает в этом клубе');
+  const buyer = team(o.to), seller = team(o.from);
+  if (!buyer || !seller) return reject('Клуб не найден');
+  const euros = offerFeeEuros(o);
+  if (euros > (buyer.budget || 0)) return reject('У клуба-покупателя не хватает средств на компенсацию');
+
+  // целевая должность
+  let targetRole = o.targetRole;
+  if (targetRole === 'copy') {
+    const src = (db.staffRoles || []).find((r: any) => r.id === o.role);
+    const have = customRolesOf(o.to).find((r: any) => r.title.toLowerCase() === String(src?.title || o.roleTitle).toLowerCase());
+    if (have) targetRole = have.id;
+    else {
+      const nr = { id: 'c_' + uid(), teamId: o.to, title: src?.title || o.roleTitle, desc: src?.desc || '', icon: src?.icon || '🧩', createdAt: new Date().toISOString() };
+      db.staffRoles.push(nr); targetRole = nr.id;
+    }
+  }
+  if (!roleValidFor(o.to, targetRole)) return reject('Должность в клубе-покупателе больше не существует');
+  const meta: any = roleMetaFor(o.to, targetRole);
+
+  // действующий специалист на этой должности у покупателя уходит
+  const out = (db.staff || []).filter((x: any) => x.teamId === o.to && x.role === targetRole);
+  o.replacedNames = out.map((x: any) => x.name);
+  out.forEach((x: any) => cancelStaffOffersFor(x.id, 'Специалист больше не работает в клубе'));
+  db.staff = db.staff.filter((x: any) => !(x.teamId === o.to && x.role === targetRole));
+
+  m.teamId = o.to; m.teamName = buyer.name; m.role = targetRole; m.roleTitle = meta.title;
+  if (targetRole === 'head') {
+    m.style ||= 'possession'; m.styleTitle ||= 'Сбалансированный стиль'; m.favoriteFormation ||= '4-3-3';
+  }
+  m.updatedAt = new Date().toISOString();
+
+  if (euros > 0) {
+    if (!Array.isArray(db.budgetHistory)) db.budgetHistory = [];
+    const pb = buyer.budget || 0; buyer.budget = pb - euros;
+    db.budgetHistory.push({ id: uid(), teamId: buyer.id, teamName: buyer.name, amount: -euros, prevBudget: pb, newBudget: buyer.budget,
+      type: 'staff_buy', typeLabel: 'Покупка тренера/специалиста', description: `Штаб: ${m.name} (${meta.title}) из «${seller.name}» (-€${euros.toLocaleString('ru-RU')})`, date: new Date().toISOString() });
+    const ps = seller.budget || 0; seller.budget = ps + euros;
+    db.budgetHistory.push({ id: uid(), teamId: seller.id, teamName: seller.name, amount: euros, prevBudget: ps, newBudget: seller.budget,
+      type: 'staff_sell', typeLabel: 'Продажа тренера/специалиста', description: `Штаб: ${m.name} ушёл в «${buyer.name}» (+€${euros.toLocaleString('ru-RU')})`, date: new Date().toISOString() });
+  }
+  for (const other of db.staffOffers) {
+    if (other.id !== o.id && other.staffId === o.staffId && other.status === 'pending') {
+      other.status = 'rejected'; other.rejectReason = `Специалист перешёл в «${buyer.name}»`;
+    }
+  }
+  o.status = 'approved'; o.executedAt = new Date().toISOString();
+  try { tg(`✅ Штаб: <b>${esc(m.name)}</b> (${esc(meta.title)}) переходит из «${esc(seller.name)}» в «${esc(buyer.name)}» (${esc(o.fee)}).`); } catch { }
+  return { executed: true };
+}
+
+// ответ клуба: продавец одобряет/отклоняет, покупатель может отозвать
+app.post('/api/club/staff/offer/respond', needClub, (req: any, res) => {
+  const { offerId, action } = req.body;
+  const o = (db.staffOffers || []).find((x: any) => x.id === offerId);
+  if (!o || o.status !== 'pending') return fail(res, 'Заявка не найдена или уже закрыта');
+  if (action === 'cancel') {
+    if (o.to !== req.tid) return fail(res, 'Отозвать заявку может только её автор');
+    o.status = 'cancelled'; o.rejectReason = 'Отозвана клубом';
+    save();
+    return res.json({ ok: 1, cancelled: true, message: 'Заявка отозвана' });
+  }
+  if (o.from !== req.tid) return fail(res, 'Эта заявка адресована не вашему клубу');
+  if (action === 'approve') {
+    o.clubApproval = 'approved'; o.clubRespondedAt = new Date().toISOString();
+    const r = executeStaffOfferIfApproved(o);
+    save();
+    return res.json({ ok: 1, approved: true, executed: r.executed, message: r.executed
+      ? 'Сделка завершена — специалист перешёл в другой клуб. Не забудьте назначить замену.'
+      : r.error ? `Не удалось завершить: ${r.error}` : 'Вы дали согласие. Ожидается решение администратора лиги.' });
+  }
+  o.clubApproval = 'rejected'; o.status = 'rejected'; o.rejectReason = `Отклонено клубом «${tn(req.tid)}»`;
+  save();
+  res.json({ ok: 1, rejected: true, message: `Вы отклонили заявку на ${o.staffName}.` });
+});
+
+// админ: все заявки и решение
+app.get('/api/admin/staff-offers', admin, (req, res) => {
+  const all = (db.staffOffers || []).map(staffOfferView);
+  res.json({ pending: all.filter((o: any) => o.status === 'pending'), history: all.filter((o: any) => o.status !== 'pending').slice(0, 30) });
+});
+app.post('/api/admin/staff-offer/respond', admin, (req, res) => {
+  const { offerId, action, force } = req.body;
+  const o = (db.staffOffers || []).find((x: any) => x.id === offerId);
+  if (!o || o.status !== 'pending') return fail(res, 'Заявка не найдена или уже закрыта');
+  if (action === 'approve') {
+    o.adminApproval = 'approved';
+    if (force) o.clubApproval = 'approved';
+    const r = executeStaffOfferIfApproved(o);
+    save();
+    return res.json({ ok: 1, approved: true, executed: r.executed, offer: staffOfferView(o), message: r.executed
+      ? 'Сделка завершена'
+      : r.error ? `Не удалось завершить: ${r.error}` : 'Одобрено. Ждём согласия клуба-продавца.' });
+  }
+  o.adminApproval = 'rejected'; o.status = 'rejected'; o.rejectReason = 'Отклонено администратором';
+  save();
+  res.json({ ok: 1, rejected: true, message: 'Заявка отклонена' });
 });
 
 const STAFF_SYS = `Ты — футбольный аналитик для симулятора. По ФИО, должности и краткой информации от клуба верни портрет специалиста тренерского штаба в JSON. Если это реальный известный специалист — используй только достоверные факты. Если такого человека не знаешь — не выдумывай регалии, клубы и титулы: опирайся только на краткую информацию клуба и составь нейтральный портрет (found=false). Не пиши о личной жизни, здоровье, скандалах. Формат: {"found":true,"name":"ФИО по-русски","age":число,"nationality":"страна","specialty":"1 предложение о специализации","bio":"2-4 предложения: карьера, опыт, подход к работе","style":"только для главного тренера, одно из: possession, press, counter, attack, bus","styleTitle":"короткое название стиля (только для главного тренера)","favoriteFormation":"например 4-3-3 (только для главного тренера)","reputation":число 50-95 (только для главного тренера),"temperament":"1-3 слова (только для главного тренера)","quote":"фирменная фраза в «ёлочках» (только для главного тренера)"}`;
@@ -8610,38 +9203,23 @@ setInterval(() => {
 invalidateAgg();
 resumeLive();
 
+/* Планировщик ИИ. Работает только при включённом «Автозапуске» и только для РПЛ, Кубка России и переходных матчей.
+   Запрос к нейросети уходит за минуту до начала (матч 11:30 → запрос в 11:29) и только для этого матча. */
 setInterval(() => {
   if (!db.settings.auto) return;
-  const now = new Date();
-  const allSeason = seasonFx();
-
-  // Strict rule for RPL and Russian Cup:
-  // "А также если я хочу чтобы матчи сами автоматически игрались по достижению времени реального - 
-  // это касается не только, но и кубка России. Это действует только на кубок России и рпл, 
-  // получается если идет рпл, то в этот день только рпл, если наступило время кубка России, 
-  // то идет кубок России, мы двигаемся строго по расписанию виртуального времени."
-  const rplAndCupDue = allSeason.filter((f: any) => {
-    if (f.status !== 'scheduled') return false;
-    if (f.comp !== 'rpl' && f.comp !== 'cup' && f.comp !== 'supercup') return false;
-    return realAt(f) <= now;
-  });
-
-  const othersDue = allSeason.filter((f: any) => {
-    if (f.status !== 'scheduled') return false;
-    if (f.comp === 'rpl' || f.comp === 'cup' || f.comp === 'supercup') return false;
-    const matchTime = f.realDate && f.realTime ? realAt(f) : at(f);
-    return matchTime <= now;
-  });
-
-  const due = [...rplAndCupDue, ...othersDue];
-  if (due.length) {
-    runBatch(due).catch(console.error);
+  const now = Date.now(), lead = (db.settings.aiLeadSec !== undefined ? +db.settings.aiLeadSec : 60) * 1000;
+  for (const f of seasonFx()) {
+    if (f.status !== 'scheduled' || f.noAuto || !isAutoFx(f)) continue;
+    const t = realAt(f).getTime();
+    if (t - lead > now) continue;          // ещё рано
+    if (now - t > AI_MAX_LATE_MS) continue; // слишком давно — только вручную из «Очереди ИИ»
+    enqueue(f.id, false, false);
   }
-}, 30000);
+}, 10000);
 
 const shutdown = async () => {
   saveNow();
-  await Promise.race([fbFlush(), new Promise(r => setTimeout(r, 8000))]);
+  await Promise.race([pgFlush(() => db), new Promise(r => setTimeout(r, 8000))]);
   process.exit(0);
 };
 process.on('SIGINT', shutdown);
